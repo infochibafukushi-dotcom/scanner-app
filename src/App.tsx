@@ -1,12 +1,15 @@
-import { ChangeEvent, useMemo, useState } from 'react'
+import { ChangeEvent, useMemo, useRef, useState } from 'react'
 import { CameraCapture } from './components/CameraCapture'
 import { CornerEditor } from './components/CornerEditor'
 import { CorrectedPreview } from './components/CorrectedPreview'
+import { OcrTextPanel } from './components/OcrTextPanel'
 import { PreviewModal } from './components/PreviewModal'
-import type { FilterMode, ScanPage } from './types'
+import { TranslationPanel } from './components/TranslationPanel'
+import { invalidateOcrForImageChange, type FilterMode, type ScanPage } from './types'
 import { detectDocumentCorners } from './utils/corners'
-import { recognizePages } from './utils/ocr'
+import { collectPageTexts, recognizePage } from './utils/ocr'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
+import { sharePagesWithGpt } from './utils/share'
 import { downloadTextFile, downloadWordFile } from './utils/textExport'
 
 type PreviewIntent = 'preview' | 'save' | 'share' | 'text' | 'word'
@@ -38,8 +41,27 @@ const makePage = async (dataUrl: string, name: string): Promise<ScanPage> => {
     corners: detection.corners,
     cornerDetection: detection.detected ? 'auto' : 'fallback',
     rotation: 0,
-    filter: 'color'
+    filter: 'color',
+    ocrStatus: 'idle',
+    translationStatus: 'idle'
   }
+}
+
+const applyOcrUpdates = (
+  pages: ScanPage[],
+  updates: { index: number; text: string }[]
+): ScanPage[] => {
+  if (!updates.length) return pages
+  return pages.map((page, index) => {
+    const update = updates.find((item) => item.index === index)
+    if (!update) return page
+    return {
+      ...page,
+      ocrText: update.text,
+      ocrStatus: 'done',
+      ocrError: undefined
+    }
+  })
 }
 
 const filters: { key: FilterMode; label: string }[] = [
@@ -53,12 +75,22 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
+  const [panelBusy, setPanelBusy] = useState(false)
   const [detectingId, setDetectingId] = useState<string | null>(null)
   const [fileName, setFileName] = useState(initialFileName())
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewIntent, setPreviewIntent] = useState<PreviewIntent>('preview')
   const [ocrStatus, setOcrStatus] = useState('')
+  const [pageOcrStatus, setPageOcrStatus] = useState('')
+  const [gptFallbackVisible, setGptFallbackVisible] = useState(false)
+  const [translationOpenSignal, setTranslationOpenSignal] = useState(0)
+  const translationPanelRef = useRef<HTMLDivElement | null>(null)
   const selectedPage = useMemo(() => pages.find((page) => page.id === selectedId) ?? null, [pages, selectedId])
+  const selectedIndex = useMemo(
+    () => (selectedPage ? pages.findIndex((page) => page.id === selectedPage.id) : -1),
+    [pages, selectedPage]
+  )
+  const anyBusy = isBusy || panelBusy
 
   const appendPage = (page: ScanPage) => {
     setPages((current) => [...current, page])
@@ -92,6 +124,10 @@ export default function App() {
     setPages((current) => current.map((page) => (page.id === pageId ? updater(page) : page)))
   }
 
+  const updatePageImage = (pageId: string, updater: (page: ScanPage) => ScanPage) => {
+    updatePage(pageId, (page) => invalidateOcrForImageChange(updater(page)))
+  }
+
   const removePage = (pageId: string) => {
     setPages((current) => {
       const next = current.filter((page) => page.id !== pageId)
@@ -116,7 +152,7 @@ export default function App() {
     setDetectingId(page.id)
     try {
       const detection = await detectDocumentCorners(page.dataUrl)
-      updatePage(page.id, (current) => ({
+      updatePageImage(page.id, (current) => ({
         ...current,
         corners: detection.corners,
         cornerDetection: detection.detected ? 'auto' : 'fallback'
@@ -174,19 +210,19 @@ export default function App() {
     }
   }
 
-  const runOcr = async () => {
-    setOcrStatus('OCRを準備しています…')
-    return recognizePages(pages, (message, progress) => {
-      const percent = Math.round(progress * 100)
-      setOcrStatus(`${message}${percent > 0 ? ` ${percent}%` : ''}`)
+  const ensureTextsForExport = async (progressPrefix: string) => {
+    const { texts, updates } = await collectPageTexts(pages, (current, total) => {
+      setOcrStatus(`${progressPrefix}\n${current} / ${total}ページ`)
     })
+    if (updates.length) setPages((current) => applyOcrUpdates(current, updates))
+    return texts
   }
 
   const performSaveText = async () => {
     if (!pages.length) return
     setIsBusy(true)
     try {
-      const texts = await runOcr()
+      const texts = await ensureTextsForExport('文字を読み取っています…')
       downloadTextFile(texts, fileName)
       setPreviewOpen(false)
     } catch (error) {
@@ -202,7 +238,7 @@ export default function App() {
     if (!pages.length) return
     setIsBusy(true)
     try {
-      const texts = await runOcr()
+      const texts = await ensureTextsForExport('文字を読み取っています…')
       setOcrStatus('Wordファイルを作成しています…')
       await downloadWordFile(texts, fileName)
       setPreviewOpen(false)
@@ -213,6 +249,99 @@ export default function App() {
       setOcrStatus('')
       setIsBusy(false)
     }
+  }
+
+  const runPageOcr = async (page: ScanPage, force: boolean) => {
+    if (panelBusy || isBusy) return
+    setPanelBusy(true)
+    setPageOcrStatus('文字を読み取っています…')
+    updatePage(page.id, (current) => ({
+      ...current,
+      ocrStatus: 'processing',
+      ocrError: undefined
+    }))
+
+    try {
+      const text = await recognizePage(page, (message, progress) => {
+        const percent = Math.round(progress * 100)
+        setPageOcrStatus(`文字を読み取っています…${percent > 0 ? ` ${percent}%` : ''}\n${message}`)
+      })
+      updatePage(page.id, (current) => ({
+        ...current,
+        ocrText: text,
+        ocrStatus: 'done',
+        ocrError: undefined,
+        translationStatus:
+          current.translationText || current.translationStatus === 'done' ? 'stale' : current.translationStatus
+      }))
+      setPageOcrStatus('')
+    } catch (error) {
+      console.error(error)
+      updatePage(page.id, (current) => ({
+        ...current,
+        ocrStatus: 'error',
+        ocrError: '文字の読み取りに失敗しました。通信状態を確認してもう一度お試しください。',
+        ...(force ? { ocrText: undefined } : {})
+      }))
+      setPageOcrStatus('')
+    } finally {
+      setPanelBusy(false)
+    }
+  }
+
+  const handleShareGpt = async () => {
+    if (!pages.length || panelBusy || isBusy) return
+    setPanelBusy(true)
+    setGptFallbackVisible(false)
+    setPageOcrStatus('GPT共有のため文字を読み取っています…')
+
+    const workingPages = pages
+    setPages((current) =>
+      current.map((page) =>
+        page.ocrStatus === 'done' && typeof page.ocrText === 'string'
+          ? page
+          : { ...page, ocrStatus: 'processing' as const, ocrError: undefined }
+      )
+    )
+
+    try {
+      const { texts, updates } = await collectPageTexts(workingPages, (current, total) => {
+        setPageOcrStatus(`GPT共有のため文字を読み取っています\n${current} / ${total}ページ`)
+      })
+
+      const nextPages = applyOcrUpdates(workingPages, updates)
+      setPages(nextPages)
+
+      setPageOcrStatus('共有準備中…')
+      const result = await sharePagesWithGpt(nextPages, texts)
+      if (result.type === 'clipboard') setGptFallbackVisible(true)
+      else if (result.type === 'failed') window.alert(result.message || 'GPT共有に失敗しました。')
+      setPageOcrStatus('')
+    } catch (error) {
+      if ((error as DOMException)?.name === 'AbortError') {
+        setPageOcrStatus('')
+        return
+      }
+      console.error(error)
+      setPageOcrStatus('')
+      window.alert('GPT共有に失敗しました。')
+      setPages((current) =>
+        current.map((page) =>
+          page.ocrStatus === 'processing'
+            ? { ...page, ocrStatus: typeof page.ocrText === 'string' ? 'done' : 'error', ocrError: typeof page.ocrText === 'string' ? undefined : '文字の読み取りに失敗しました。' }
+            : page
+        )
+      )
+    } finally {
+      setPanelBusy(false)
+    }
+  }
+
+  const openTranslationPanel = () => {
+    setTranslationOpenSignal((value) => value + 1)
+    window.setTimeout(() => {
+      translationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }, 50)
   }
 
   return (
@@ -236,7 +365,7 @@ export default function App() {
         <div>
           <span className="badge">PWA / ホーム画面追加対応</span>
           <h1>Scanner</h1>
-          <p>連続撮影、四隅自動判定、台形補正、保存前プレビュー、PDF・テキスト・Word保存に対応します。</p>
+          <p>連続撮影、四隅自動判定、台形補正、OCR、翻訳、保存前プレビュー、PDF・テキスト・Word保存に対応します。</p>
         </div>
         <div className="hero-actions">
           <button type="button" className="primary-button" onClick={() => setCameraOpen(true)}>
@@ -246,11 +375,11 @@ export default function App() {
             <input type="file" accept="image/*" multiple onChange={addFiles} hidden />
             写真から追加
           </label>
-          <button type="button" className="secondary-button" onClick={() => openPreview('preview')} disabled={!pages.length || isBusy}>仕上がり確認</button>
-          <button type="button" className="secondary-button" onClick={() => openPreview('save')} disabled={!pages.length || isBusy}>PDF保存</button>
-          <button type="button" className="secondary-button" onClick={() => openPreview('text')} disabled={!pages.length || isBusy}>テキスト保存</button>
-          <button type="button" className="secondary-button" onClick={() => openPreview('word')} disabled={!pages.length || isBusy}>Word保存</button>
-          <button type="button" className="secondary-button" onClick={() => openPreview('share')} disabled={!pages.length || isBusy}>共有</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('preview')} disabled={!pages.length || anyBusy}>仕上がり確認</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('save')} disabled={!pages.length || anyBusy}>PDF保存</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('text')} disabled={!pages.length || anyBusy}>テキスト保存</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('word')} disabled={!pages.length || anyBusy}>Word保存</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('share')} disabled={!pages.length || anyBusy}>共有</button>
         </div>
       </header>
 
@@ -281,6 +410,15 @@ export default function App() {
                   <strong>{index + 1}. {page.name}</strong>
                   <span>{page.filter === 'color' ? 'カラー' : page.filter === 'gray' ? 'グレー' : '白黒'}</span>
                   <span>{page.cornerDetection === 'auto' ? '四隅: 自動' : page.cornerDetection === 'manual' ? '四隅: 手動調整済み' : '四隅: 要確認'}</span>
+                  <span>
+                    {page.ocrStatus === 'done'
+                      ? 'OCR: 済'
+                      : page.ocrStatus === 'stale'
+                        ? 'OCR: 要再読取'
+                        : page.ocrStatus === 'processing'
+                          ? 'OCR: 処理中'
+                          : 'OCR: 未'}
+                  </span>
                 </div>
               </button>
             ))}
@@ -294,7 +432,7 @@ export default function App() {
               <span>ファイル名</span>
               <input value={fileName} onChange={(event) => setFileName(event.target.value)} />
             </label>
-            <p className="helper-text">PDFは画像として保存します。テキスト・Wordは補正後画像をOCRして文字データとして保存します。</p>
+            <p className="helper-text">PDFは画像として保存します。テキスト・Wordは補正後画像のOCR結果（編集済み含む）を文字データとして保存します。</p>
           </div>
 
           {selectedPage ? (
@@ -311,13 +449,13 @@ export default function App() {
                         key={filter.key}
                         type="button"
                         className={selectedPage.filter === filter.key ? 'chip active' : 'chip'}
-                        onClick={() => updatePage(selectedPage.id, (page) => ({ ...page, filter: filter.key }))}
+                        onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, filter: filter.key }))}
                       >{filter.label}</button>
                     ))}
                   </div>
                   <div className="button-row wrap">
-                    <button type="button" className="chip" onClick={() => updatePage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation - 90 }))}>左回転</button>
-                    <button type="button" className="chip" onClick={() => updatePage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + 90 }))}>右回転</button>
+                    <button type="button" className="chip" onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation - 90 }))}>左回転</button>
+                    <button type="button" className="chip" onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + 90 }))}>右回転</button>
                     <button type="button" className="chip" onClick={() => movePage(selectedPage.id, -1)}>前へ</button>
                     <button type="button" className="chip" onClick={() => movePage(selectedPage.id, 1)}>次へ</button>
                     <button type="button" className="chip danger" onClick={() => removePage(selectedPage.id)}>削除</button>
@@ -331,11 +469,42 @@ export default function App() {
                 corners={selectedPage.corners}
                 detectionMode={selectedPage.cornerDetection}
                 detecting={detectingId === selectedPage.id}
-                onChange={(corners) => updatePage(selectedPage.id, (page) => ({ ...page, corners, cornerDetection: 'manual' }))}
+                onChange={(corners) => updatePageImage(selectedPage.id, (page) => ({ ...page, corners, cornerDetection: 'manual' }))}
                 onRedetect={() => redetectCorners(selectedPage)}
               />
 
               <CorrectedPreview page={selectedPage} />
+
+              <OcrTextPanel
+                page={selectedPage}
+                pageIndex={Math.max(0, selectedIndex)}
+                pageCount={pages.length}
+                busy={panelBusy}
+                statusMessage={pageOcrStatus}
+                onTextChange={(text) => updatePage(selectedPage.id, (page) => ({
+                  ...page,
+                  ocrText: text,
+                  ocrStatus: 'done',
+                  translationStatus:
+                    page.translationText || page.translationStatus === 'done' ? 'stale' : page.translationStatus
+                }))}
+                onRecognize={() => runPageOcr(selectedPage, false)}
+                onRerecognize={() => runPageOcr(selectedPage, true)}
+                onShareGpt={handleShareGpt}
+                onOpenTranslation={openTranslationPanel}
+                gptFallbackVisible={gptFallbackVisible}
+                onDismissGptFallback={() => setGptFallbackVisible(false)}
+              />
+
+              <div ref={translationPanelRef}>
+                <TranslationPanel
+                  page={selectedPage}
+                  busy={panelBusy}
+                  openSignal={translationOpenSignal}
+                  onBusyChange={setPanelBusy}
+                  onUpdate={(updater) => updatePage(selectedPage.id, updater)}
+                />
+              </div>
             </>
           ) : (
             <div className="card placeholder-card">

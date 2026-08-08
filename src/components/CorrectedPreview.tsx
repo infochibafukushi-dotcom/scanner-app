@@ -10,6 +10,7 @@ export function CorrectedPreview({ page }: CorrectedPreviewProps) {
   const [imageUrl, setImageUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const imageKey = `${page.id}:${page.dataUrl.length}:${page.rotation}:${page.filter}:${JSON.stringify(page.corners)}`
 
   useEffect(() => {
     let cancelled = false
@@ -34,7 +35,9 @@ export function CorrectedPreview({ page }: CorrectedPreviewProps) {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [page])
+    // page 全体ではなく imageKey で監視し、OCR/翻訳更新での再描画を避ける
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageKey])
 
   return (
     <div className="card corrected-preview-card">
