@@ -6,11 +6,18 @@ type CameraCaptureProps = {
   onCapture: (dataUrl: string) => void
 }
 
+type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean }
+type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean }
+
 export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const videoTrackRef = useRef<MediaStreamTrack | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [capturedCount, setCapturedCount] = useState(0)
+  const [torchSupported, setTorchSupported] = useState(false)
+  const [torchOn, setTorchOn] = useState(false)
+  const [torchBusy, setTorchBusy] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -20,6 +27,8 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
     const startCamera = async () => {
       try {
         setError(null)
+        setTorchSupported(false)
+        setTorchOn(false)
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
@@ -35,6 +44,14 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
         }
 
         streamRef.current = stream
+        const track = stream.getVideoTracks()[0] ?? null
+        videoTrackRef.current = track
+
+        if (track?.getCapabilities) {
+          const capabilities = track.getCapabilities() as TorchCapabilities
+          setTorchSupported(Boolean(capabilities.torch))
+        }
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream
           await videoRef.current.play()
@@ -49,12 +66,38 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
 
     return () => {
       cancelled = true
-      streamRef.current?.getTracks().forEach((track) => track.stop())
+      const track = videoTrackRef.current
+      if (track && torchOn) {
+        void track.applyConstraints({ advanced: [{ torch: false } as TorchConstraintSet] }).catch(() => undefined)
+      }
+      streamRef.current?.getTracks().forEach((mediaTrack) => mediaTrack.stop())
       streamRef.current = null
+      videoTrackRef.current = null
+      setTorchOn(false)
+      setTorchSupported(false)
     }
   }, [open])
 
   if (!open) return null
+
+  const toggleTorch = async () => {
+    const track = videoTrackRef.current
+    if (!track || !torchSupported || torchBusy) return
+
+    const next = !torchOn
+    setTorchBusy(true)
+    try {
+      await track.applyConstraints({ advanced: [{ torch: next } as TorchConstraintSet] })
+      setTorchOn(next)
+    } catch (torchError) {
+      console.error(torchError)
+      setTorchSupported(false)
+      setTorchOn(false)
+      window.alert('この端末・ブラウザでは撮影ライトを制御できません。')
+    } finally {
+      setTorchBusy(false)
+    }
+  }
 
   const capture = () => {
     const video = videoRef.current
@@ -78,7 +121,18 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
           <strong>連続撮影</strong>
           <span>{capturedCount}枚撮影</span>
         </div>
-        <button type="button" className="camera-close" onClick={onClose}>完了</button>
+        <div className="camera-toolbar-actions">
+          <button
+            type="button"
+            className={`camera-torch ${torchOn ? 'active' : ''}`}
+            onClick={() => void toggleTorch()}
+            disabled={!torchSupported || torchBusy || Boolean(error)}
+            aria-pressed={torchOn}
+          >
+            {torchBusy ? '切替中…' : torchSupported ? `ライト ${torchOn ? 'ON' : 'OFF'}` : 'ライト非対応'}
+          </button>
+          <button type="button" className="camera-close" onClick={onClose}>完了</button>
+        </div>
       </div>
 
       <div className="camera-view">
@@ -91,7 +145,7 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
         <button type="button" className="shutter-button" onClick={capture} disabled={Boolean(error)} aria-label="撮影">
           <span />
         </button>
-        <p>撮影後もカメラは開いたままです。続けて何枚でも撮影できます。</p>
+        <p>ライトONは撮影画面を閉じるまで維持します。撮影後も続けて何枚でも撮影できます。</p>
       </div>
     </div>
   )
