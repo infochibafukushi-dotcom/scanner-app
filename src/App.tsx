@@ -1,12 +1,15 @@
 import { ChangeEvent, useMemo, useState } from 'react'
 import { CameraCapture } from './components/CameraCapture'
 import { CornerEditor } from './components/CornerEditor'
+import { CorrectedPreview } from './components/CorrectedPreview'
 import { PreviewModal } from './components/PreviewModal'
 import type { FilterMode, ScanPage } from './types'
 import { detectDocumentCorners } from './utils/corners'
+import { recognizePages } from './utils/ocr'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
+import { downloadTextFile, downloadWordFile } from './utils/textExport'
 
-type PreviewIntent = 'preview' | 'save' | 'share'
+type PreviewIntent = 'preview' | 'save' | 'share' | 'text' | 'word'
 
 const initialFileName = () => {
   const date = new Date()
@@ -54,6 +57,7 @@ export default function App() {
   const [fileName, setFileName] = useState(initialFileName())
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewIntent, setPreviewIntent] = useState<PreviewIntent>('preview')
+  const [ocrStatus, setOcrStatus] = useState('')
   const selectedPage = useMemo(() => pages.find((page) => page.id === selectedId) ?? null, [pages, selectedId])
 
   const appendPage = (page: ScanPage) => {
@@ -126,6 +130,7 @@ export default function App() {
   const openPreview = (intent: PreviewIntent) => {
     if (!pages.length) return
     setPreviewIntent(intent)
+    setOcrStatus('')
     setPreviewOpen(true)
   }
 
@@ -169,6 +174,47 @@ export default function App() {
     }
   }
 
+  const runOcr = async () => {
+    setOcrStatus('OCRを準備しています…')
+    return recognizePages(pages, (message, progress) => {
+      const percent = Math.round(progress * 100)
+      setOcrStatus(`${message}${percent > 0 ? ` ${percent}%` : ''}`)
+    })
+  }
+
+  const performSaveText = async () => {
+    if (!pages.length) return
+    setIsBusy(true)
+    try {
+      const texts = await runOcr()
+      downloadTextFile(texts, fileName)
+      setPreviewOpen(false)
+    } catch (error) {
+      console.error(error)
+      window.alert('テキスト保存に失敗しました。通信状態を確認してもう一度お試しください。')
+    } finally {
+      setOcrStatus('')
+      setIsBusy(false)
+    }
+  }
+
+  const performSaveWord = async () => {
+    if (!pages.length) return
+    setIsBusy(true)
+    try {
+      const texts = await runOcr()
+      setOcrStatus('Wordファイルを作成しています…')
+      await downloadWordFile(texts, fileName)
+      setPreviewOpen(false)
+    } catch (error) {
+      console.error(error)
+      window.alert('Word保存に失敗しました。通信状態を確認してもう一度お試しください。')
+    } finally {
+      setOcrStatus('')
+      setIsBusy(false)
+    }
+  }
+
   return (
     <div className="app-shell">
       <CameraCapture open={cameraOpen} onClose={() => setCameraOpen(false)} onCapture={addCapturedPage} />
@@ -178,16 +224,19 @@ export default function App() {
         fileName={fileName}
         intent={previewIntent}
         busy={isBusy}
+        ocrStatus={ocrStatus}
         onClose={() => setPreviewOpen(false)}
         onSave={performExportPdf}
         onShare={performSharePdf}
+        onSaveText={performSaveText}
+        onSaveWord={performSaveWord}
       />
 
       <header className="hero">
         <div>
           <span className="badge">PWA / ホーム画面追加対応</span>
           <h1>Scanner</h1>
-          <p>連続撮影、四隅自動判定・補正、保存前プレビュー、複数ページPDF保存・共有に対応します。</p>
+          <p>連続撮影、四隅自動判定、台形補正、保存前プレビュー、PDF・テキスト・Word保存に対応します。</p>
         </div>
         <div className="hero-actions">
           <button type="button" className="primary-button" onClick={() => setCameraOpen(true)}>
@@ -199,6 +248,8 @@ export default function App() {
           </label>
           <button type="button" className="secondary-button" onClick={() => openPreview('preview')} disabled={!pages.length || isBusy}>仕上がり確認</button>
           <button type="button" className="secondary-button" onClick={() => openPreview('save')} disabled={!pages.length || isBusy}>PDF保存</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('text')} disabled={!pages.length || isBusy}>テキスト保存</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('word')} disabled={!pages.length || isBusy}>Word保存</button>
           <button type="button" className="secondary-button" onClick={() => openPreview('share')} disabled={!pages.length || isBusy}>共有</button>
         </div>
       </header>
@@ -243,7 +294,7 @@ export default function App() {
               <span>ファイル名</span>
               <input value={fileName} onChange={(event) => setFileName(event.target.value)} />
             </label>
-            <p className="helper-text">PDF保存・共有の前に、実際の台形補正・画像モードを反映した仕上がりプレビューを表示します。</p>
+            <p className="helper-text">PDFは画像として保存します。テキスト・Wordは補正後画像をOCRして文字データとして保存します。</p>
           </div>
 
           {selectedPage ? (
@@ -276,17 +327,20 @@ export default function App() {
 
               <CornerEditor
                 imageUrl={selectedPage.dataUrl}
+                filter={selectedPage.filter}
                 corners={selectedPage.corners}
                 detectionMode={selectedPage.cornerDetection}
                 detecting={detectingId === selectedPage.id}
                 onChange={(corners) => updatePage(selectedPage.id, (page) => ({ ...page, corners, cornerDetection: 'manual' }))}
                 onRedetect={() => redetectCorners(selectedPage)}
               />
+
+              <CorrectedPreview page={selectedPage} />
             </>
           ) : (
             <div className="card placeholder-card">
               <h2>スキャンを開始してください</h2>
-              <p>撮影したページを選ぶと、四隅・回転・画像モードを編集できます。</p>
+              <p>撮影したページを選ぶと、四隅・台形補正・回転・画像モードを編集できます。</p>
             </div>
           )}
         </section>
