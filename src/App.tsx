@@ -3,7 +3,7 @@ import { CameraCapture } from './components/CameraCapture'
 import { CornerEditor } from './components/CornerEditor'
 import { PreviewModal } from './components/PreviewModal'
 import type { FilterMode, ScanPage } from './types'
-import { detectDocumentCorners } from './utils/image'
+import { detectDocumentCorners } from './utils/corners'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
 
 type PreviewIntent = 'preview' | 'save' | 'share'
