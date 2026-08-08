@@ -15,26 +15,85 @@ export const loadImage = (src: string) =>
     image.src = src
   })
 
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 const grayscale = (r: number, g: number, b: number) => Math.round(r * 0.299 + g * 0.587 + b * 0.114)
+
+const percentileFromHistogram = (histogram: Uint32Array, total: number, percentile: number) => {
+  const target = total * percentile
+  let accumulated = 0
+  for (let value = 0; value < histogram.length; value += 1) {
+    accumulated += histogram[value]
+    if (accumulated >= target) return value
+  }
+  return 255
+}
+
+const otsuThreshold = (histogram: Uint32Array, total: number) => {
+  let weightedSum = 0
+  for (let i = 0; i < 256; i += 1) weightedSum += i * histogram[i]
+
+  let backgroundWeight = 0
+  let backgroundSum = 0
+  let bestVariance = -1
+  let bestThreshold = 160
+
+  for (let threshold = 0; threshold < 256; threshold += 1) {
+    backgroundWeight += histogram[threshold]
+    if (backgroundWeight === 0) continue
+
+    const foregroundWeight = total - backgroundWeight
+    if (foregroundWeight === 0) break
+
+    backgroundSum += threshold * histogram[threshold]
+    const backgroundMean = backgroundSum / backgroundWeight
+    const foregroundMean = (weightedSum - backgroundSum) / foregroundWeight
+    const variance = backgroundWeight * foregroundWeight * (backgroundMean - foregroundMean) ** 2
+
+    if (variance > bestVariance) {
+      bestVariance = variance
+      bestThreshold = threshold
+    }
+  }
+
+  return bestThreshold
+}
 
 const applyFilter = (ctx: CanvasRenderingContext2D, filter: FilterMode, width: number, height: number) => {
   if (filter === 'color') return
 
   const imageData = ctx.getImageData(0, 0, width, height)
   const { data } = imageData
+  const total = width * height
+  const luminance = new Uint8Array(total)
+  const histogram = new Uint32Array(256)
 
-  for (let i = 0; i < data.length; i += 4) {
+  for (let pixel = 0, i = 0; i < data.length; i += 4, pixel += 1) {
     const gray = grayscale(data[i], data[i + 1], data[i + 2])
+    luminance[pixel] = gray
+    histogram[gray] += 1
+  }
 
-    if (filter === 'gray') {
-      data[i] = gray
-      data[i + 1] = gray
-      data[i + 2] = gray
-      continue
-    }
+  const low = percentileFromHistogram(histogram, total, 0.02)
+  const high = percentileFromHistogram(histogram, total, 0.98)
+  const range = Math.max(28, high - low)
+  const normalizedHistogram = new Uint32Array(256)
+  const normalized = new Uint8Array(total)
 
-    const contrasted = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128))
-    const value = contrasted > 165 ? 255 : 0
+  for (let pixel = 0; pixel < total; pixel += 1) {
+    const stretched = clamp(((luminance[pixel] - low) / range) * 255, 0, 255)
+    const gammaCorrected = 255 * Math.pow(stretched / 255, 0.94)
+    const value = Math.round(clamp((gammaCorrected - 128) * 1.06 + 128, 0, 255))
+    normalized[pixel] = value
+    normalizedHistogram[value] += 1
+  }
+
+  const threshold = otsuThreshold(normalizedHistogram, total)
+
+  for (let pixel = 0, i = 0; i < data.length; i += 4, pixel += 1) {
+    const value = filter === 'gray'
+      ? normalized[pixel]
+      : normalized[pixel] > threshold ? 255 : 0
+
     data[i] = value
     data[i + 1] = value
     data[i + 2] = value
