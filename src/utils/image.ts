@@ -147,7 +147,11 @@ const computeHomography = (destination: Point[], source: Point[]) => {
   return [...h, 1]
 }
 
-const warpPerspective = (sourceCanvas: HTMLCanvasElement, corners: [Point, Point, Point, Point]) => {
+const warpPerspective = (
+  sourceCanvas: HTMLCanvasElement,
+  corners: [Point, Point, Point, Point],
+  maxSide = 1600
+) => {
   const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true })
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
 
@@ -160,7 +164,6 @@ const warpPerspective = (sourceCanvas: HTMLCanvasElement, corners: [Point, Point
   let outputWidth = Math.max(distance(topLeft, topRight), distance(bottomLeft, bottomRight))
   let outputHeight = Math.max(distance(topLeft, bottomLeft), distance(topRight, bottomRight))
 
-  const maxSide = 1600
   const scale = Math.min(1, maxSide / Math.max(outputWidth, outputHeight))
   outputWidth = Math.max(1, Math.round(outputWidth * scale))
   outputHeight = Math.max(1, Math.round(outputHeight * scale))
@@ -209,7 +212,24 @@ const normalizeRotation = (rotation: number) => {
   return normalized < 0 ? normalized + 360 : normalized
 }
 
-export const renderScanPage = async (page: ScanPage): Promise<HTMLCanvasElement> => {
+export const renderEditorImage = async (
+  dataUrl: string,
+  filter: FilterMode,
+  maxSide = 1400
+): Promise<HTMLCanvasElement> => {
+  const sourceImage = await loadImage(dataUrl)
+  const scale = Math.min(1, maxSide / Math.max(sourceImage.width, sourceImage.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(sourceImage.width * scale))
+  canvas.height = Math.max(1, Math.round(sourceImage.height * scale))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas context could not be created.')
+  ctx.drawImage(sourceImage, 0, 0, canvas.width, canvas.height)
+  applyFilter(ctx, filter, canvas.width, canvas.height)
+  return canvas
+}
+
+export const renderScanPage = async (page: ScanPage, maxSide = 1600): Promise<HTMLCanvasElement> => {
   const sourceImage = await loadImage(page.dataUrl)
   const sourceCanvas = document.createElement('canvas')
   sourceCanvas.width = sourceImage.width
@@ -218,7 +238,7 @@ export const renderScanPage = async (page: ScanPage): Promise<HTMLCanvasElement>
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
   sourceCtx.drawImage(sourceImage, 0, 0)
 
-  const correctedCanvas = warpPerspective(sourceCanvas, page.corners)
+  const correctedCanvas = warpPerspective(sourceCanvas, page.corners, maxSide)
   const correctedCtx = correctedCanvas.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')
   applyFilter(correctedCtx, page.filter, correctedCanvas.width, correctedCanvas.height)
