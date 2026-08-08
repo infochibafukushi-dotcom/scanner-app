@@ -1,17 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Point } from '../types'
+import type { CornerDetectionMode, Point } from '../types'
 
 const labels = ['左上', '右上', '右下', '左下']
 
 type CornerEditorProps = {
   imageUrl: string
   corners: [Point, Point, Point, Point]
+  detectionMode: CornerDetectionMode
+  detecting: boolean
   onChange: (corners: [Point, Point, Point, Point]) => void
+  onRedetect: () => void
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
-export function CornerEditor({ imageUrl, corners, onChange }: CornerEditorProps) {
+const detectionLabel: Record<CornerDetectionMode, string> = {
+  auto: '自動検出済み',
+  fallback: '自動検出できず標準範囲',
+  manual: '手動調整済み'
+}
+
+export function CornerEditor({ imageUrl, corners, detectionMode, detecting, onChange, onRedetect }: CornerEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const [ratio, setRatio] = useState(1)
@@ -55,11 +64,17 @@ export function CornerEditor({ imageUrl, corners, onChange }: CornerEditorProps)
 
   return (
     <div className="editor-panel">
-      <div className="editor-header">
+      <div className="editor-header editor-header-actions">
         <div>
-          <h3>四隅調整</h3>
-          <p>青いハンドルをドラッグして、取り込み範囲を調整します。</p>
+          <div className="editor-title-line">
+            <h3>四隅調整</h3>
+            <span className={`detection-badge ${detectionMode}`}>{detectionLabel[detectionMode]}</span>
+          </div>
+          <p>撮影時に四隅を自動判定します。ずれた場合だけ青いハンドルで微調整してください。</p>
         </div>
+        <button type="button" className="chip" onClick={onRedetect} disabled={detecting}>
+          {detecting ? '再検出中…' : '四隅を再検出'}
+        </button>
       </div>
 
       <div ref={containerRef} className="editor-canvas" style={{ aspectRatio: `${ratio}` }}>
