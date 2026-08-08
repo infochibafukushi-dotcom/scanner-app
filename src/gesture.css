@@ -1,0 +1,45 @@
+.editor-viewport {
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.editor-viewport.is-panning {
+  cursor: grabbing;
+}
+
+.editor-stage,
+.editor-image,
+.editor-overlay {
+  touch-action: none;
+}
+
+.editor-image {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.corner-handle {
+  z-index: 6;
+  touch-action: none;
+}
+
+@media (max-width: 600px) {
+  .editor-header p {
+    color: #cbd5e1;
+  }
+
+  .editor-zoom-controls input[type='range'] {
+    display: none;
+  }
+
+  .editor-zoom-controls::after {
+    content: '1本指: 移動  /  2本指: ピンチ';
+    flex: 1 0 100%;
+    color: #94a3b8;
+    font-size: .72rem;
+    text-align: center;
+  }
+}
