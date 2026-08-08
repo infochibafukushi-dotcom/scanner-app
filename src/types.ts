@@ -1,4 +1,5 @@
 export type FilterMode = 'color' | 'gray' | 'bw'
+export type CornerDetectionMode = 'auto' | 'fallback' | 'manual'
 
 export type Point = {
   x: number
@@ -10,6 +11,7 @@ export type ScanPage = {
   name: string
   dataUrl: string
   corners: [Point, Point, Point, Point]
+  cornerDetection: CornerDetectionMode
   rotation: number
   filter: FilterMode
 }
