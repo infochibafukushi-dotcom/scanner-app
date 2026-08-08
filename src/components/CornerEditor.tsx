@@ -23,11 +23,13 @@ const detectionLabel: Record<CornerDetectionMode, string> = {
 }
 
 export function CornerEditor({ imageUrl, filter, corners, detectionMode, detecting, onChange, onRedetect }: CornerEditorProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const viewportRef = useRef<HTMLDivElement | null>(null)
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const [ratio, setRatio] = useState(1)
   const [previewUrl, setPreviewUrl] = useState(imageUrl)
   const [filtering, setFiltering] = useState(false)
+  const [zoom, setZoom] = useState(1)
 
   useEffect(() => {
     const image = new Image()
@@ -66,10 +68,10 @@ export function CornerEditor({ imageUrl, filter, corners, detectionMode, detecti
     if (activeIndex === null) return
 
     const onPointerMove = (event: PointerEvent) => {
-      const container = containerRef.current
-      if (!container) return
+      const stage = stageRef.current
+      if (!stage) return
 
-      const rect = container.getBoundingClientRect()
+      const rect = stage.getBoundingClientRect()
       const x = clamp((event.clientX - rect.left) / rect.width, 0, 1)
       const y = clamp((event.clientY - rect.top) / rect.height, 0, 1)
       const next = [...corners] as [Point, Point, Point, Point]
@@ -88,10 +90,20 @@ export function CornerEditor({ imageUrl, filter, corners, detectionMode, detecti
     }
   }, [activeIndex, corners, onChange])
 
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport || zoom === 1) return
+    const maxLeft = viewport.scrollWidth - viewport.clientWidth
+    const maxTop = viewport.scrollHeight - viewport.clientHeight
+    viewport.scrollTo({ left: maxLeft / 2, top: maxTop / 2 })
+  }, [zoom])
+
   const polygonPoints = useMemo(
     () => corners.map((point) => `${point.x * 100}% ${point.y * 100}%`).join(', '),
     [corners]
   )
+
+  const setZoomLevel = (next: number) => setZoom(clamp(Math.round(next * 10) / 10, 1, 4))
 
   return (
     <div className="editor-panel">
@@ -101,41 +113,63 @@ export function CornerEditor({ imageUrl, filter, corners, detectionMode, detecti
             <h3>四隅調整</h3>
             <span className={`detection-badge ${detectionMode}`}>{detectionLabel[detectionMode]}</span>
           </div>
-          <p>選択中のカラー・グレー・白黒をこの画面にも反映します。青い四隅を必要に応じて微調整してください。</p>
+          <p>選択中の画像モードを反映します。拡大して紙端と青い四隅が合っているか確認できます。</p>
         </div>
         <button type="button" className="chip" onClick={onRedetect} disabled={detecting}>
           {detecting ? '再検出中…' : '四隅を再検出'}
         </button>
       </div>
 
-      <div ref={containerRef} className="editor-canvas" style={{ aspectRatio: `${ratio}` }}>
-        <img src={previewUrl} alt="調整対象" className="editor-image" />
-        {filtering && <div className="editor-processing">画像モード反映中…</div>}
-        <div className="editor-overlay" style={{ clipPath: `polygon(${polygonPoints})` }} />
-        <svg className="editor-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-          <polygon
-            points={corners.map((point) => `${point.x * 100},${point.y * 100}`).join(' ')}
-            fill="rgba(14,165,233,0.15)"
-            stroke="#0ea5e9"
-            strokeWidth="1"
-          />
-        </svg>
-        {corners.map((point, index) => (
-          <button
-            key={labels[index]}
-            type="button"
-            className="corner-handle"
-            style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
-            onPointerDown={(event) => {
-              event.preventDefault()
-              setActiveIndex(index)
-            }}
-            aria-label={labels[index]}
-            title={labels[index]}
-          >
-            <span />
-          </button>
-        ))}
+      <div className="editor-zoom-controls" aria-label="四隅調整のズーム">
+        <button type="button" className="chip zoom-button" onClick={() => setZoomLevel(zoom - 0.5)} disabled={zoom <= 1}>−</button>
+        <input
+          type="range"
+          min="1"
+          max="4"
+          step="0.1"
+          value={zoom}
+          onChange={(event) => setZoomLevel(Number(event.target.value))}
+          aria-label="拡大率"
+        />
+        <button type="button" className="chip zoom-button" onClick={() => setZoomLevel(zoom + 0.5)} disabled={zoom >= 4}>＋</button>
+        <button type="button" className="chip" onClick={() => setZoomLevel(1)} disabled={zoom === 1}>等倍</button>
+        <span>{Math.round(zoom * 100)}%</span>
+      </div>
+
+      <div ref={viewportRef} className="editor-viewport">
+        <div
+          ref={stageRef}
+          className="editor-canvas editor-stage"
+          style={{ aspectRatio: `${ratio}`, width: `${zoom * 100}%` }}
+        >
+          <img src={previewUrl} alt="調整対象" className="editor-image" />
+          {filtering && <div className="editor-processing">画像モード反映中…</div>}
+          <div className="editor-overlay" style={{ clipPath: `polygon(${polygonPoints})` }} />
+          <svg className="editor-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <polygon
+              points={corners.map((point) => `${point.x * 100},${point.y * 100}`).join(' ')}
+              fill="rgba(14,165,233,0.15)"
+              stroke="#0ea5e9"
+              strokeWidth="1"
+            />
+          </svg>
+          {corners.map((point, index) => (
+            <button
+              key={labels[index]}
+              type="button"
+              className="corner-handle"
+              style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+              onPointerDown={(event) => {
+                event.preventDefault()
+                setActiveIndex(index)
+              }}
+              aria-label={labels[index]}
+              title={labels[index]}
+            >
+              <span />
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )
