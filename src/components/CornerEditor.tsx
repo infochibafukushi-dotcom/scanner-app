@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CornerDetectionMode, Point } from '../types'
+import type { CornerDetectionMode, FilterMode, Point } from '../types'
+import { renderEditorImage } from '../utils/image'
 
 const labels = ['左上', '右上', '右下', '左下']
 
 type CornerEditorProps = {
   imageUrl: string
+  filter: FilterMode
   corners: [Point, Point, Point, Point]
   detectionMode: CornerDetectionMode
   detecting: boolean
@@ -20,16 +22,45 @@ const detectionLabel: Record<CornerDetectionMode, string> = {
   manual: '手動調整済み'
 }
 
-export function CornerEditor({ imageUrl, corners, detectionMode, detecting, onChange, onRedetect }: CornerEditorProps) {
+export function CornerEditor({ imageUrl, filter, corners, detectionMode, detecting, onChange, onRedetect }: CornerEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const [ratio, setRatio] = useState(1)
+  const [previewUrl, setPreviewUrl] = useState(imageUrl)
+  const [filtering, setFiltering] = useState(false)
 
   useEffect(() => {
     const image = new Image()
     image.onload = () => setRatio(image.width / image.height || 1)
     image.src = imageUrl
   }, [imageUrl])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (filter === 'color') {
+      setPreviewUrl(imageUrl)
+      setFiltering(false)
+      return () => { cancelled = true }
+    }
+
+    setFiltering(true)
+    renderEditorImage(imageUrl, filter)
+      .then((canvas) => {
+        if (!cancelled) setPreviewUrl(canvas.toDataURL('image/jpeg', 0.9))
+      })
+      .catch((error) => {
+        console.error(error)
+        if (!cancelled) setPreviewUrl(imageUrl)
+      })
+      .finally(() => {
+        if (!cancelled) setFiltering(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [imageUrl, filter])
 
   useEffect(() => {
     if (activeIndex === null) return
@@ -70,7 +101,7 @@ export function CornerEditor({ imageUrl, corners, detectionMode, detecting, onCh
             <h3>四隅調整</h3>
             <span className={`detection-badge ${detectionMode}`}>{detectionLabel[detectionMode]}</span>
           </div>
-          <p>撮影時に四隅を自動判定します。ずれた場合だけ青いハンドルで微調整してください。</p>
+          <p>選択中のカラー・グレー・白黒をこの画面にも反映します。青い四隅を必要に応じて微調整してください。</p>
         </div>
         <button type="button" className="chip" onClick={onRedetect} disabled={detecting}>
           {detecting ? '再検出中…' : '四隅を再検出'}
@@ -78,7 +109,8 @@ export function CornerEditor({ imageUrl, corners, detectionMode, detecting, onCh
       </div>
 
       <div ref={containerRef} className="editor-canvas" style={{ aspectRatio: `${ratio}` }}>
-        <img src={imageUrl} alt="調整対象" className="editor-image" />
+        <img src={previewUrl} alt="調整対象" className="editor-image" />
+        {filtering && <div className="editor-processing">画像モード反映中…</div>}
         <div className="editor-overlay" style={{ clipPath: `polygon(${polygonPoints})` }} />
         <svg className="editor-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
           <polygon
