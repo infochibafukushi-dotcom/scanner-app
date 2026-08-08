@@ -153,7 +153,10 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
       setHighResShots([])
     } catch (stitchError) {
       console.error(stitchError)
-      window.alert('4分割画像の合成に失敗しました。撮影をやり直してください。')
+      const message = stitchError instanceof Error
+        ? stitchError.message
+        : '4分割画像の合成に失敗しました。撮影をやり直してください。'
+      window.alert(message)
       setHighResShots([])
     } finally {
       setStitching(false)
@@ -208,12 +211,12 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
             <div className="highres-reticle" aria-hidden="true" />
             <div className="highres-instruction">
               {stitching ? (
-                <strong>4枚を合成しています…</strong>
+                <strong>文字・線を照合して4枚を位置合わせ中…</strong>
               ) : (
                 <>
                   <span>高精細 {highResShots.length + 1} / 4</span>
                   <strong>{highResPosition}を画面いっぱいに撮影</strong>
-                  <small>前の範囲と約30%重なるようにしてください</small>
+                  <small>隣の写真と約40%重ね、距離と傾きをなるべく一定にしてください</small>
                 </>
               )}
             </div>
@@ -273,8 +276,8 @@ export function CameraCapture({ open, onClose, onCapture }: CameraCaptureProps) 
           {mode === 'normal'
             ? 'ライトONは撮影画面を閉じるまで維持します。撮影後も続けて何枚でも撮影できます。'
             : stitching
-              ? '位置合わせと明るさを整えながら1枚の高精細画像を作成しています。'
-              : '左上 → 右上 → 右下 → 左下の順に、隣の範囲を約30%重ねて撮影します。'}
+              ? '重複部分の文字・線を照合し、位置と明るさを合わせて1枚に合成しています。'
+              : '左上 → 右上 → 右下 → 左下の順に、隣の範囲を約40%重ねて撮影します。'}
         </p>
       </div>
     </div>
