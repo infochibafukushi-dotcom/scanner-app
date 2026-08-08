@@ -4,6 +4,7 @@ import { registerSW } from 'virtual:pwa-register'
 import App from './App'
 import './index.css'
 import './gesture.css'
+import './highres.css'
 
 registerSW({ immediate: true })
 
