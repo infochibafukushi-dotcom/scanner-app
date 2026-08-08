@@ -5,6 +5,7 @@ import App from './App'
 import './index.css'
 import './gesture.css'
 import './highres.css'
+import './preview.css'
 
 registerSW({ immediate: true })
 

@@ -6,15 +6,36 @@ const base = '/scanner-app/'
 
 export default defineConfig({
   base,
+  optimizeDeps: {
+    exclude: ['@techstark/opencv-js']
+  },
+  build: {
+    chunkSizeWarningLimit: 16000
+  },
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,webmanifest}'],
+        globIgnores: ['**/opencv*.js', '**/node_modules/**'],
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+        runtimeCaching: [
+          {
+            urlPattern: /opencv.*\.js$/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'opencv-runtime',
+              expiration: { maxEntries: 2, maxAgeSeconds: 60 * 60 * 24 * 30 }
+            }
+          }
+        ]
+      },
       manifest: {
         name: 'Scanner',
         short_name: 'Scanner',
-        description: '連続撮影・四隅補正・PDF結合・共有ができるスキャンアプリ',
+        description: 'Scanner PWA',
         theme_color: '#0f172a',
         background_color: '#020617',
         display: 'standalone',

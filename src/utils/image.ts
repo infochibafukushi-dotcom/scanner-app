@@ -161,27 +161,86 @@ const enhanceDocument = (ctx: CanvasRenderingContext2D, width: number, height: n
   ctx.putImageData(imageData, 0, 0)
 }
 
+
+const applyClean = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+  const imageData = ctx.getImageData(0, 0, width, height)
+  const { data } = imageData
+  const original = new Uint8ClampedArray(data)
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = (y * width + x) * 4
+      const value = grayscale(original[index], original[index + 1], original[index + 2])
+      const offsets = [((y - 1) * width + x) * 4, ((y + 1) * width + x) * 4, (y * width + x - 1) * 4, (y * width + x + 1) * 4]
+      const neighbors = offsets.map((offset) => grayscale(original[offset], original[offset + 1], original[offset + 2]))
+      const minimum = Math.min(...neighbors)
+      const average = neighbors.reduce((sum, neighbor) => sum + neighbor, 0) / neighbors.length
+      // Restrict changes to weak, isolated artifacts in bright paper areas.
+      if (value >= 105 && minimum > 215 && average - value > 32) {
+        const mix = value < 175 ? 0.78 : 0.42
+        for (let channel = 0; channel < 3; channel += 1) data[index + channel] = Math.round(original[index + channel] * (1 - mix) + average * mix)
+      } else if (value >= 175 && minimum > 225 && average - value > 14) {
+        for (let channel = 0; channel < 3; channel += 1) data[index + channel] = Math.round(original[index + channel] * 0.8 + average * 0.2)
+      }
+    }
+  }
+  ctx.putImageData(imageData, 0, 0)
+}
+
+const applyAutoEnhance = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+  const imageData = ctx.getImageData(0, 0, width, height)
+  const { data } = imageData
+  const illuminationCanvas = document.createElement('canvas')
+  illuminationCanvas.width = width
+  illuminationCanvas.height = height
+  const illuminationCtx = illuminationCanvas.getContext('2d', { willReadFrequently: true })
+  if (!illuminationCtx) throw new Error('Canvas context could not be created.')
+  illuminationCtx.filter = `blur(${clamp(Math.round(Math.min(width, height) / 24), 14, 48)}px)`
+  illuminationCtx.drawImage(ctx.canvas, 0, 0)
+  const illumination = illuminationCtx.getImageData(0, 0, width, height).data
+  const histogram = new Uint32Array(256)
+  const luminance = new Uint8Array(width * height)
+  for (let pixel = 0, index = 0; index < data.length; index += 4, pixel += 1) {
+    const background = grayscale(illumination[index], illumination[index + 1], illumination[index + 2])
+    const correction = clamp(240 / Math.max(135, background), 0.9, 1.16)
+    data[index] = clamp(Math.round(data[index] * correction), 0, 255)
+    data[index + 1] = clamp(Math.round(data[index + 1] * correction), 0, 255)
+    data[index + 2] = clamp(Math.round(data[index + 2] * correction), 0, 255)
+    const value = grayscale(data[index], data[index + 1], data[index + 2])
+    luminance[pixel] = value
+    histogram[value] += 1
+  }
+  const low = percentileFromHistogram(histogram, luminance.length, 0.01)
+  const high = percentileFromHistogram(histogram, luminance.length, 0.995)
+  const range = Math.max(45, high - low)
+  for (let pixel = 0, index = 0; index < data.length; index += 4, pixel += 1) {
+    const current = luminance[pixel]
+    const target = current * 0.25 + clamp(((current - low) / range) * 240 + 8, 0, 255) * 0.75
+    const adjustment = target / Math.max(1, current)
+    data[index] = clamp(Math.round(data[index] * adjustment), 0, 255)
+    data[index + 1] = clamp(Math.round(data[index + 1] * adjustment), 0, 255)
+    data[index + 2] = clamp(Math.round(data[index + 2] * adjustment), 0, 255)
+  }
+  ctx.putImageData(imageData, 0, 0)
+}
+
 const applyFilter = (ctx: CanvasRenderingContext2D, filter: FilterMode, width: number, height: number) => {
   if (filter === 'color') return
-
+  if (filter === 'auto') { applyAutoEnhance(ctx, width, height); return }
   const imageData = ctx.getImageData(0, 0, width, height)
   const { data } = imageData
   const total = width * height
   const luminance = new Uint8Array(total)
   const histogram = new Uint32Array(256)
-
   for (let pixel = 0, i = 0; i < data.length; i += 4, pixel += 1) {
     const gray = grayscale(data[i], data[i + 1], data[i + 2])
     luminance[pixel] = gray
     histogram[gray] += 1
   }
-
   const low = percentileFromHistogram(histogram, total, 0.02)
   const high = percentileFromHistogram(histogram, total, 0.98)
   const range = Math.max(28, high - low)
   const normalizedHistogram = new Uint32Array(256)
   const normalized = new Uint8Array(total)
-
   for (let pixel = 0; pixel < total; pixel += 1) {
     const stretched = clamp(((luminance[pixel] - low) / range) * 255, 0, 255)
     const gammaCorrected = 255 * Math.pow(stretched / 255, 0.94)
@@ -189,19 +248,13 @@ const applyFilter = (ctx: CanvasRenderingContext2D, filter: FilterMode, width: n
     normalized[pixel] = value
     normalizedHistogram[value] += 1
   }
-
   const threshold = otsuThreshold(normalizedHistogram, total)
-
   for (let pixel = 0, i = 0; i < data.length; i += 4, pixel += 1) {
-    const value = filter === 'gray'
-      ? normalized[pixel]
-      : normalized[pixel] > threshold ? 255 : 0
-
+    const value = filter === 'gray' ? normalized[pixel] : normalized[pixel] > threshold ? 255 : 0
     data[i] = value
     data[i + 1] = value
     data[i + 2] = value
   }
-
   ctx.putImageData(imageData, 0, 0)
 }
 
@@ -318,7 +371,8 @@ const normalizeRotation = (rotation: number) => {
 export const renderEditorImage = async (
   dataUrl: string,
   filter: FilterMode,
-  maxSide = 1400
+  maxSide = 1400,
+  clean = false
 ): Promise<HTMLCanvasElement> => {
   const sourceImage = await loadImage(dataUrl)
   const scale = Math.min(1, maxSide / Math.max(sourceImage.width, sourceImage.height))
@@ -328,6 +382,7 @@ export const renderEditorImage = async (
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Canvas context could not be created.')
   ctx.drawImage(sourceImage, 0, 0, canvas.width, canvas.height)
+  if (clean) applyClean(ctx, canvas.width, canvas.height)
   applyFilter(ctx, filter, canvas.width, canvas.height)
   return canvas
 }
@@ -341,13 +396,11 @@ export const renderScanPage = async (page: ScanPage, maxSide = 1600): Promise<HT
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
   sourceCtx.drawImage(sourceImage, 0, 0)
 
-  // Final document pipeline:
-  // perspective correction -> background illumination estimation -> shadow removal
-  // -> automatic brightness/contrast -> selected image mode -> rotation/OCR/export.
   const correctedCanvas = warpPerspective(sourceCanvas, page.corners, maxSide)
-  const correctedCtx = correctedCanvas.getContext('2d', { willReadFrequently: true })
+  const correctedCtx = correctedCanvas.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')
   enhanceDocument(correctedCtx, correctedCanvas.width, correctedCanvas.height)
+  if (page.clean) applyClean(correctedCtx, correctedCanvas.width, correctedCanvas.height)
   applyFilter(correctedCtx, page.filter, correctedCanvas.width, correctedCanvas.height)
 
   const rotation = normalizeRotation(page.rotation)

@@ -1,370 +1,218 @@
-import { loadImage } from './image'
+import type { HighResStitchProgress, HighResStitchResult, HighResTileId } from '../types'
+import { HIGH_RES_LABELS } from '../types'
+import { analyzeCoverageFromHomography, evaluateHomographyMatrix, inspectStitchQuality } from './highResQuality'
+import { loadOpenCv } from './opencvLoader'
 
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+type CanvasImage = { canvas: HTMLCanvasElement; scale: number }
+type Alignment = { id: HighResTileId; H: number[]; center: { x: number; y: number }; detailScale: number }
 
-const SHOT_ORDER = ['左上', '右上', '右下', '左下'] as const
-export type HighResShotPosition = (typeof SHOT_ORDER)[number]
-export const HIGH_RES_SHOT_ORDER = SHOT_ORDER
-
-type EdgeMap = {
-  width: number
-  height: number
-  data: Float32Array
+const tileIds: HighResTileId[] = ['tl', 'tr', 'br', 'bl']
+const expectedRegions: Record<HighResTileId, [number, number, number, number]> = {
+  tl: [0, 0, 0.65, 0.65],
+  tr: [0.35, 0, 1, 0.65],
+  br: [0.35, 0.35, 1, 1],
+  bl: [0, 0.35, 0.65, 1]
 }
 
-type Alignment = {
-  dx: number
-  dy: number
-  correlation: number
-  overlapRatio: number
-}
+const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+  const image = new Image()
+  image.onload = () => resolve(image)
+  image.onerror = reject
+  image.src = src
+})
 
-type TilePosition = {
-  x: number
-  y: number
-}
-
-type PixelCandidate = {
-  score: number
-  r: number
-  g: number
-  b: number
-}
-
-const averageLuminance = (data: Uint8ClampedArray) => {
-  let total = 0
-  let count = 0
-  const step = 16
-  for (let i = 0; i < data.length; i += 4 * step) {
-    total += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114
-    count += 1
-  }
-  return count ? total / count : 128
-}
-
-const createTile = async (dataUrl: string, width: number, height: number) => {
-  const image = await loadImage(dataUrl)
+const toCanvas = async (src: string, maxSide: number): Promise<CanvasImage> => {
+  const image = await loadImage(src)
+  const scale = Math.min(1, maxSide / Math.max(image.width, image.height))
   const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('Canvas context could not be created.')
-
-  const cropRatio = 0.97
-  const sourceWidth = image.width * cropRatio
-  const sourceHeight = image.height * cropRatio
-  const sourceX = (image.width - sourceWidth) / 2
-  const sourceY = (image.height - sourceHeight) / 2
-  ctx.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height)
-  return ctx.getImageData(0, 0, width, height)
+  canvas.width = Math.max(1, Math.round(image.width * scale))
+  canvas.height = Math.max(1, Math.round(image.height * scale))
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) throw new Error('Canvas を作成できませんでした。')
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return { canvas, scale }
 }
 
-const createEdgeMap = (imageData: ImageData, maxSide = 190): EdgeMap => {
-  const sourceWidth = imageData.width
-  const sourceHeight = imageData.height
-  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight))
-  const width = Math.max(72, Math.round(sourceWidth * scale))
-  const height = Math.max(72, Math.round(sourceHeight * scale))
-  const gray = new Float32Array(width * height)
-  const src = imageData.data
+const matValues = (mat: any) => Array.from(mat.data64F ?? mat.data32F ?? mat.data).slice(0, 9) as number[]
 
-  for (let y = 0; y < height; y += 1) {
-    const sy = clamp(Math.round(((y + 0.5) / height) * sourceHeight - 0.5), 0, sourceHeight - 1)
-    for (let x = 0; x < width; x += 1) {
-      const sx = clamp(Math.round(((x + 0.5) / width) * sourceWidth - 0.5), 0, sourceWidth - 1)
-      const index = (sy * sourceWidth + sx) * 4
-      gray[y * width + x] = src[index] * 0.299 + src[index + 1] * 0.587 + src[index + 2] * 0.114
-    }
+const multiply3 = (a: number[], b: number[]) => {
+  const out = new Array<number>(9).fill(0)
+  for (let row = 0; row < 3; row += 1) for (let col = 0; col < 3; col += 1) {
+    out[row * 3 + col] = a[row * 3] * b[col] + a[row * 3 + 1] * b[col + 3] + a[row * 3 + 2] * b[col + 6]
   }
-
-  const edges = new Float32Array(width * height)
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const horizontal = gray[y * width + x + 1] - gray[y * width + x - 1]
-      const vertical = gray[(y + 1) * width + x] - gray[(y - 1) * width + x]
-      edges[y * width + x] = Math.min(255, Math.abs(horizontal) + Math.abs(vertical))
-    }
-  }
-
-  return { width, height, data: edges }
+  return out
 }
 
-const scoreOffset = (a: EdgeMap, b: EdgeMap, dx: number, dy: number, sampleStep: number) => {
-  const xStart = Math.max(1, dx + 1)
-  const yStart = Math.max(1, dy + 1)
-  const xEnd = Math.min(a.width - 1, dx + b.width - 1)
-  const yEnd = Math.min(a.height - 1, dy + b.height - 1)
-  const overlapWidth = xEnd - xStart
-  const overlapHeight = yEnd - yStart
-  if (overlapWidth < a.width * 0.12 || overlapHeight < a.height * 0.12) return null
+const invert3 = (m: number[]) => {
+  const d = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6])
+  if (Math.abs(d) < 1e-10) return undefined
+  return [(m[4] * m[8] - m[5] * m[7]) / d, (m[2] * m[7] - m[1] * m[8]) / d, (m[1] * m[5] - m[2] * m[4]) / d, (m[5] * m[6] - m[3] * m[8]) / d, (m[0] * m[8] - m[2] * m[6]) / d, (m[2] * m[3] - m[0] * m[5]) / d, (m[3] * m[7] - m[4] * m[6]) / d, (m[1] * m[6] - m[0] * m[7]) / d, (m[0] * m[4] - m[1] * m[3]) / d]
+}
 
+const apply = (h: number[], x: number, y: number) => {
+  const d = h[6] * x + h[7] * y + h[8]
+  return { x: (h[0] * x + h[1] * y + h[2]) / d, y: (h[3] * x + h[4] * y + h[5]) / d }
+}
+
+const paperLuminance = (image: ImageData) => {
+  let sum = 0
   let count = 0
-  let sumA = 0
-  let sumB = 0
-  let sumAA = 0
-  let sumBB = 0
-  let sumAB = 0
-
-  for (let y = yStart; y < yEnd; y += sampleStep) {
-    const by = y - dy
-    for (let x = xStart; x < xEnd; x += sampleStep) {
-      const bx = x - dx
-      const av = a.data[y * a.width + x]
-      const bv = b.data[by * b.width + bx]
-      sumA += av
-      sumB += bv
-      sumAA += av * av
-      sumBB += bv * bv
-      sumAB += av * bv
+  for (let index = 0; index < image.data.length; index += 64) {
+    const luminance = image.data[index] * 0.299 + image.data[index + 1] * 0.587 + image.data[index + 2] * 0.114
+    if (luminance > 160) {
+      sum += luminance
       count += 1
     }
   }
-
-  if (count < 120) return null
-  const numerator = count * sumAB - sumA * sumB
-  const denominatorA = count * sumAA - sumA * sumA
-  const denominatorB = count * sumBB - sumB * sumB
-  const denominator = Math.sqrt(Math.max(1e-6, denominatorA * denominatorB))
-  const correlation = numerator / denominator
-  const overlapRatio = (overlapWidth * overlapHeight) / (a.width * a.height)
-
-  return {
-    correlation,
-    overlapRatio,
-    score: correlation + Math.min(0.04, overlapRatio * 0.06)
-  }
+  return count ? sum / count : 220
 }
 
-const findBestAlignment = (a: EdgeMap, b: EdgeMap, direction: 'horizontal' | 'vertical'): Alignment => {
-  const coarse = Math.max(2, Math.round(Math.min(a.width, a.height) / 45))
-  const horizontal = direction === 'horizontal'
-
-  const dxMin = horizontal ? Math.round(a.width * 0.04) : -Math.round(a.width * 0.32)
-  const dxMax = horizontal ? Math.round(a.width * 0.88) : Math.round(a.width * 0.32)
-  const dyMin = horizontal ? -Math.round(a.height * 0.32) : Math.round(a.height * 0.04)
-  const dyMax = horizontal ? Math.round(a.height * 0.32) : Math.round(a.height * 0.88)
-
-  let best: (Alignment & { score: number }) | null = null
-
-  for (let dy = dyMin; dy <= dyMax; dy += coarse) {
-    for (let dx = dxMin; dx <= dxMax; dx += coarse) {
-      const result = scoreOffset(a, b, dx, dy, 3)
-      if (!result) continue
-      if (!best || result.score > best.score) best = { dx, dy, ...result }
-    }
+/** Ensures the supposedly detailed tile is a useful quadrant close-up. */
+export const checkTileDetailEnough = (homography: ArrayLike<number>, tileW: number, tileH: number, refW: number, refH: number, id?: HighResTileId) => {
+  const coverage = analyzeCoverageFromHomography(homography, tileW, tileH, refW, refH)
+  if (coverage.areaRatio > 0.92) return { ok: false, message: '基準画像全体が写っています。指定位置をもっと近づけて撮影してください。' }
+  if (coverage.areaRatio < 0.04 || coverage.intersectionRatio < 0.45) return { ok: false, message: '基準画像との重なりが不足しています。' }
+  if (id) {
+    const [x0, y0, x1, y1] = expectedRegions[id]
+    const cx = (coverage.bbox.x + coverage.bbox.width / 2) / refW
+    const cy = (coverage.bbox.y + coverage.bbox.height / 2) / refH
+    if (cx < x0 - 0.18 || cx > x1 + 0.18 || cy < y0 - 0.18 || cy > y1 + 0.18) return { ok: false, message: `${HIGH_RES_LABELS[id]}の位置に合わせて撮影してください。` }
   }
-
-  if (!best) throw new Error('重複部分を検出できませんでした。隣の範囲を35〜45%ほど重ねて撮影してください。')
-
-  const refineRadius = coarse * 2
-  const coarseBest = best
-  for (let dy = coarseBest.dy - refineRadius; dy <= coarseBest.dy + refineRadius; dy += 1) {
-    for (let dx = coarseBest.dx - refineRadius; dx <= coarseBest.dx + refineRadius; dx += 1) {
-      const result = scoreOffset(a, b, dx, dy, 2)
-      if (!result) continue
-      if (result.score > best.score) best = { dx, dy, ...result }
-    }
-  }
-
-  if (best.correlation < 0.18 || best.overlapRatio < 0.12) {
-    throw new Error('4枚の位置合わせ精度が不足しています。紙の1/4を大きく写し、隣の範囲を35〜45%重ねてください。')
-  }
-
-  return best
+  return { ok: true, message: '' }
 }
 
-const alignmentToPixels = (alignment: Alignment, map: EdgeMap, tileWidth: number, tileHeight: number) => ({
-  x: alignment.dx * (tileWidth / map.width),
-  y: alignment.dy * (tileHeight / map.height)
-})
+export async function stitchHighRes(params: {
+  baseDataUrl: string
+  tiles: Record<HighResTileId, string>
+  onProgress?: (p: HighResStitchProgress) => void
+}): Promise<HighResStitchResult> {
+  const progress = (stage: string, current: number, total: number) => params.onProgress?.({ stage, current, total })
+  try {
+    progress('OpenCV を準備中', 0, 6)
+    const cv: any = await loadOpenCv()
+    const [baseAnalysis, ...tileAnalysis] = await Promise.all([params.baseDataUrl, ...tileIds.map((id) => params.tiles[id])].map((url) => toCanvas(url, 1150)))
+    const baseGray = cv.imread(baseAnalysis.canvas)
+    cv.cvtColor(baseGray, baseGray, cv.COLOR_RGBA2GRAY)
+    const orb = new cv.ORB(2000)
+    const baseKeys = new cv.KeyPointVector()
+    const baseDescriptors = new cv.Mat()
+    orb.detectAndCompute(baseGray, new cv.Mat(), baseKeys, baseDescriptors)
+    if (baseKeys.size() < 80) throw new Error('基準画像の特徴点が不足しています。文字や模様が見えるように撮影してください。')
 
-const validateGuidedShift = (
-  shift: { x: number; y: number },
-  direction: 'horizontal' | 'vertical',
-  tileWidth: number,
-  tileHeight: number
-) => {
-  if (direction === 'horizontal') {
-    const movement = shift.x / tileWidth
-    const cross = Math.abs(shift.y) / tileHeight
-    if (movement < 0.2) {
-      throw new Error('同じ範囲を撮りすぎています。紙全体ではなく、左上・右上など各1/4を画面いっぱいに大きく撮影してください。')
-    }
-    if (movement > 0.82) {
-      throw new Error('左右の写真の重なりが不足しています。隣の写真と35〜45%重なるように撮影してください。')
-    }
-    if (cross > 0.24) {
-      throw new Error('左右移動時の上下ずれが大きすぎます。スマホの高さと傾きを保って横へ移動してください。')
-    }
-    return
-  }
-
-  const movement = shift.y / tileHeight
-  const cross = Math.abs(shift.x) / tileWidth
-  if (movement < 0.2) {
-    throw new Error('同じ範囲を撮りすぎています。紙全体ではなく、上側・下側の各1/4を画面いっぱいに大きく撮影してください。')
-  }
-  if (movement > 0.82) {
-    throw new Error('上下の写真の重なりが不足しています。隣の写真と35〜45%重なるように撮影してください。')
-  }
-  if (cross > 0.24) {
-    throw new Error('上下移動時の左右ずれが大きすぎます。スマホの高さと傾きを保って縦へ移動してください。')
-  }
-}
-
-const weightedAverage = (a: number, aWeight: number, b: number, bWeight: number) => {
-  const total = Math.max(1e-6, aWeight + bWeight)
-  return (a * aWeight + b * bWeight) / total
-}
-
-const centerScore = (x: number, y: number, width: number, height: number) => {
-  const nx = Math.abs(x - (width - 1) / 2) / Math.max(1, width / 2)
-  const ny = Math.abs(y - (height - 1) / 2) / Math.max(1, height / 2)
-  return clamp(1 - Math.max(nx, ny), 0.001, 1)
-}
-
-const pushCandidate = (
-  candidates: PixelCandidate[],
-  source: Uint8ClampedArray,
-  sourceIndex: number,
-  gain: number,
-  score: number
-) => {
-  candidates.push({
-    score,
-    r: clamp(source[sourceIndex] * gain, 0, 255),
-    g: clamp(source[sourceIndex + 1] * gain, 0, 255),
-    b: clamp(source[sourceIndex + 2] * gain, 0, 255)
-  })
-}
-
-export const stitchHighResCaptures = async (dataUrls: string[]) => {
-  if (dataUrls.length !== 4) throw new Error('高精細スキャンには4枚の写真が必要です。')
-
-  const first = await loadImage(dataUrls[0])
-  const sourceMax = Math.max(first.width, first.height)
-  const tileScale = Math.min(1, 1800 / Math.max(1, sourceMax))
-  const tileWidth = Math.max(640, Math.round(first.width * tileScale))
-  const tileHeight = Math.max(640, Math.round(first.height * tileScale))
-
-  const tiles = await Promise.all(dataUrls.map((dataUrl) => createTile(dataUrl, tileWidth, tileHeight)))
-  const maps = tiles.map((tile) => createEdgeMap(tile))
-
-  const top = findBestAlignment(maps[0], maps[1], 'horizontal')
-  const left = findBestAlignment(maps[0], maps[3], 'vertical')
-  const right = findBestAlignment(maps[1], maps[2], 'vertical')
-  const bottom = findBestAlignment(maps[3], maps[2], 'horizontal')
-
-  const topShift = alignmentToPixels(top, maps[0], tileWidth, tileHeight)
-  const leftShift = alignmentToPixels(left, maps[0], tileWidth, tileHeight)
-  const rightShift = alignmentToPixels(right, maps[1], tileWidth, tileHeight)
-  const bottomShift = alignmentToPixels(bottom, maps[3], tileWidth, tileHeight)
-
-  validateGuidedShift(topShift, 'horizontal', tileWidth, tileHeight)
-  validateGuidedShift(leftShift, 'vertical', tileWidth, tileHeight)
-  validateGuidedShift(rightShift, 'vertical', tileWidth, tileHeight)
-  validateGuidedShift(bottomShift, 'horizontal', tileWidth, tileHeight)
-
-  const positions: TilePosition[] = [
-    { x: 0, y: 0 },
-    { x: topShift.x, y: topShift.y },
-    { x: 0, y: 0 },
-    { x: leftShift.x, y: leftShift.y }
-  ]
-
-  const brFromTopRight = {
-    x: positions[1].x + rightShift.x,
-    y: positions[1].y + rightShift.y
-  }
-  const brFromBottomLeft = {
-    x: positions[3].x + bottomShift.x,
-    y: positions[3].y + bottomShift.y
-  }
-
-  const disagreement = Math.hypot(
-    brFromTopRight.x - brFromBottomLeft.x,
-    brFromTopRight.y - brFromBottomLeft.y
-  )
-  if (disagreement > Math.min(tileWidth, tileHeight) * 0.14) {
-    throw new Error('4枚の位置関係が一致しません。スマホの高さ・距離・傾きをなるべく一定にして撮影し直してください。')
-  }
-
-  const rightWeight = Math.max(0.05, right.correlation)
-  const bottomWeight = Math.max(0.05, bottom.correlation)
-  positions[2] = {
-    x: weightedAverage(brFromTopRight.x, rightWeight, brFromBottomLeft.x, bottomWeight),
-    y: weightedAverage(brFromTopRight.y, rightWeight, brFromBottomLeft.y, bottomWeight)
-  }
-
-  const minX = Math.floor(Math.min(...positions.map((position) => position.x)))
-  const minY = Math.floor(Math.min(...positions.map((position) => position.y)))
-  const maxX = Math.ceil(Math.max(...positions.map((position) => position.x + tileWidth)))
-  const maxY = Math.ceil(Math.max(...positions.map((position) => position.y + tileHeight)))
-  const outputWidth = Math.max(1, maxX - minX)
-  const outputHeight = Math.max(1, maxY - minY)
-  const offsetPositions = positions.map((position) => ({
-    x: position.x - minX,
-    y: position.y - minY
-  }))
-
-  const luminances = tiles.map((tile) => averageLuminance(tile.data))
-  const sorted = [...luminances].sort((a, b) => a - b)
-  const targetLuminance = (sorted[1] + sorted[2]) / 2
-  const exposure = luminances.map((value) => clamp(targetLuminance / Math.max(18, value), 0.82, 1.22))
-
-  const outputCanvas = document.createElement('canvas')
-  outputCanvas.width = outputWidth
-  outputCanvas.height = outputHeight
-  const outputCtx = outputCanvas.getContext('2d')
-  if (!outputCtx) throw new Error('Canvas context could not be created.')
-  const output = outputCtx.createImageData(outputWidth, outputHeight)
-  const dst = output.data
-
-  for (let y = 0; y < outputHeight; y += 1) {
-    for (let x = 0; x < outputWidth; x += 1) {
-      const candidates: PixelCandidate[] = []
-
-      for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
-        const position = offsetPositions[tileIndex]
-        const localX = x - position.x
-        const localY = y - position.y
-        if (localX < 0 || localY < 0 || localX >= tileWidth || localY >= tileHeight) continue
-
-        const sx = Math.floor(localX)
-        const sy = Math.floor(localY)
-        const sourceIndex = (sy * tileWidth + sx) * 4
-        const score = centerScore(localX, localY, tileWidth, tileHeight)
-        pushCandidate(candidates, tiles[tileIndex].data, sourceIndex, exposure[tileIndex], score)
+    const alignments: Alignment[] = []
+    const failedTiles: HighResTileId[] = []
+    for (let index = 0; index < tileIds.length; index += 1) {
+      const id = tileIds[index]
+      progress(`${HIGH_RES_LABELS[id]}を位置合わせ中`, index + 1, 6)
+      const tileMat = cv.imread(tileAnalysis[index].canvas)
+      cv.cvtColor(tileMat, tileMat, cv.COLOR_RGBA2GRAY)
+      const keys = new cv.KeyPointVector()
+      const descriptors = new cv.Mat()
+      const matches = new cv.DMatchVectorVector()
+      const good = new cv.DMatchVector()
+      const mask = new cv.Mat()
+      let homography: any
+      try {
+        orb.detectAndCompute(tileMat, new cv.Mat(), keys, descriptors)
+        if (keys.size() < 80 || descriptors.empty()) throw new Error('特徴点が不足しています。')
+        const matcher = new cv.BFMatcher(cv.NORM_HAMMING, false)
+        matcher.knnMatch(descriptors, baseDescriptors, matches, 2)
+        for (let i = 0; i < matches.size(); i += 1) {
+          const pair = matches.get(i)
+          if (pair.size() >= 2 && pair.get(0).distance < pair.get(1).distance * 0.75) good.push_back(pair.get(0))
+          pair.delete()
+        }
+        matcher.delete()
+        if (good.size() < 24) throw new Error('一致する特徴が少なすぎます。')
+        const src = [], dst = []
+        for (let i = 0; i < good.size(); i += 1) {
+          const match = good.get(i)
+          const from = keys.get(match.queryIdx).pt
+          const to = baseKeys.get(match.trainIdx).pt
+          src.push(from.x, from.y); dst.push(to.x, to.y)
+        }
+        const srcMat = cv.matFromArray(good.size(), 1, cv.CV_32FC2, src)
+        const dstMat = cv.matFromArray(good.size(), 1, cv.CV_32FC2, dst)
+        homography = cv.findHomography(srcMat, dstMat, cv.RANSAC, 3, mask)
+        srcMat.delete(); dstMat.delete()
+        const inliers = Array.from(mask.data as Uint8Array).filter(Boolean).length
+        if (!homography || homography.empty() || inliers < 16 || inliers / good.size() < 0.42) throw new Error('位置合わせの信頼度が不足しています。')
+        const raw = matValues(homography)
+        const matrixQuality = evaluateHomographyMatrix(raw)
+        const detail = checkTileDetailEnough(raw, tileAnalysis[index].canvas.width, tileAnalysis[index].canvas.height, baseAnalysis.canvas.width, baseAnalysis.canvas.height, id)
+        if (!matrixQuality.ok || !detail.ok) throw new Error(matrixQuality.reason ?? detail.message)
+        const full = multiply3([1 / baseAnalysis.scale, 0, 0, 0, 1 / baseAnalysis.scale, 0, 0, 0, 1], multiply3(raw, [tileAnalysis[index].scale, 0, 0, 0, tileAnalysis[index].scale, 0, 0, 0, 1]))
+        const center = apply(full, tileAnalysis[index].canvas.width / (2 * tileAnalysis[index].scale), tileAnalysis[index].canvas.height / (2 * tileAnalysis[index].scale))
+        alignments.push({ id, H: full, center, detailScale: 1 / Math.max(1e-5, matrixQuality.scale) })
+      } catch {
+        failedTiles.push(id)
+      } finally {
+        homography?.delete(); mask.delete(); good.delete(); matches.delete(); descriptors.delete(); keys.delete(); tileMat.delete()
       }
+    }
+    baseDescriptors.delete(); baseKeys.delete(); baseGray.delete(); orb.delete()
+    if (failedTiles.length) return { ok: false, message: `${failedTiles.map((id) => HIGH_RES_LABELS[id]).join('・')}の位置合わせができませんでした。書類との距離を保ち、前の撮影範囲を少し多めに含めて撮り直してください。`, failedTiles, retakeHint: '基準画像と30〜40%重ね、文字が見える状態で近づけて撮影してください。' }
 
-      const outputIndex = (y * outputWidth + x) * 4
-      if (!candidates.length) {
-        dst[outputIndex] = 245
-        dst[outputIndex + 1] = 245
-        dst[outputIndex + 2] = 245
-        dst[outputIndex + 3] = 255
-        continue
+    progress('高解像度画像を合成中', 5, 6)
+    const [base, ...tiles] = await Promise.all([params.baseDataUrl, ...tileIds.map((id) => params.tiles[id])].map((url) => toCanvas(url, 2800)))
+    const outputScale = Math.min(1, 2600 / Math.max(base.canvas.width / base.scale, base.canvas.height / base.scale))
+    const output = document.createElement('canvas')
+    output.width = Math.max(1, Math.round(base.canvas.width / base.scale * outputScale))
+    output.height = Math.max(1, Math.round(base.canvas.height / base.scale * outputScale))
+    const outputContext = output.getContext('2d', { willReadFrequently: true })
+    if (!outputContext) throw new Error('出力 Canvas を作成できませんでした。')
+    const sourceData = [base, ...tiles].map(({ canvas }) => canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, canvas.width, canvas.height))
+    const basePaper = paperLuminance(sourceData[0])
+    const transforms = alignments.map((alignment, index) => ({
+      ...alignment,
+      inverse: invert3(multiply3(alignment.H, [1 / tiles[index].scale, 0, 0, 0, 1 / tiles[index].scale, 0, 0, 0, 1]))!,
+      image: sourceData[index + 1],
+      gain: Math.max(0.82, Math.min(1.18, basePaper / paperLuminance(sourceData[index + 1])))
+    }))
+    const result = outputContext.createImageData(output.width, output.height)
+    for (let y = 0; y < output.height; y += 1) for (let x = 0; x < output.width; x += 1) {
+      const refX = x / outputScale, refY = y / outputScale
+      const baseX = Math.min(base.canvas.width - 1, Math.max(0, Math.round(refX * base.scale)))
+      const baseY = Math.min(base.canvas.height - 1, Math.max(0, Math.round(refY * base.scale)))
+      let selected: ImageData | undefined, sx = 0, sy = 0, selectedGain = 1, best = Number.POSITIVE_INFINITY
+      let runnerUp: { image: ImageData; x: number; y: number; distance: number; gain: number } | undefined
+      for (const tile of transforms) {
+        if (!tile.inverse) continue
+        const point = apply(tile.inverse, refX, refY)
+        if (point.x < 0 || point.y < 0 || point.x >= tile.image.width || point.y >= tile.image.height) continue
+        const distance = Math.hypot(refX - tile.center.x, refY - tile.center.y) / tile.detailScale
+        if (distance < best) {
+          if (selected) runnerUp = { image: selected, x: sx, y: sy, distance: best, gain: selectedGain }
+          best = distance
+          selected = tile.image
+          sx = Math.round(point.x)
+          sy = Math.round(point.y)
+          selectedGain = tile.gain
+        } else if (!runnerUp || distance < runnerUp.distance) {
+          runnerUp = { image: tile.image, x: Math.round(point.x), y: Math.round(point.y), distance, gain: tile.gain }
+        }
       }
-
-      candidates.sort((a, b) => b.score - a.score)
-      const best = candidates[0]
-      const second = candidates[1]
-
-      // Prefer one sharp source in overlap areas. Only blend inside a very narrow
-      // score tie zone; broad averaging was the cause of doubled/blurred text.
-      if (second && Math.abs(best.score - second.score) < 0.025) {
-        dst[outputIndex] = Math.round((best.r + second.r) / 2)
-        dst[outputIndex + 1] = Math.round((best.g + second.g) / 2)
-        dst[outputIndex + 2] = Math.round((best.b + second.b) / 2)
+      if (!selected) { selected = sourceData[0]; sx = baseX; sy = baseY; selectedGain = 1; runnerUp = undefined }
+      const from = (Math.min(selected.height - 1, Math.max(0, sy)) * selected.width + Math.min(selected.width - 1, Math.max(0, sx))) * 4
+      const to = (y * output.width + x) * 4
+      const feather = runnerUp ? Math.max(0, Math.min(0.06, (3 - Math.abs(best - runnerUp.distance)) / 50)) : 0
+      if (runnerUp && feather > 0) {
+        const other = (Math.min(runnerUp.image.height - 1, Math.max(0, runnerUp.y)) * runnerUp.image.width + Math.min(runnerUp.image.width - 1, Math.max(0, runnerUp.x))) * 4
+        result.data[to] = Math.min(255, selected.data[from] * selectedGain) * (1 - feather) + Math.min(255, runnerUp.image.data[other] * runnerUp.gain) * feather
+        result.data[to + 1] = Math.min(255, selected.data[from + 1] * selectedGain) * (1 - feather) + Math.min(255, runnerUp.image.data[other + 1] * runnerUp.gain) * feather
+        result.data[to + 2] = Math.min(255, selected.data[from + 2] * selectedGain) * (1 - feather) + Math.min(255, runnerUp.image.data[other + 2] * runnerUp.gain) * feather
       } else {
-        dst[outputIndex] = Math.round(best.r)
-        dst[outputIndex + 1] = Math.round(best.g)
-        dst[outputIndex + 2] = Math.round(best.b)
+        result.data[to] = Math.min(255, selected.data[from] * selectedGain)
+        result.data[to + 1] = Math.min(255, selected.data[from + 1] * selectedGain)
+        result.data[to + 2] = Math.min(255, selected.data[from + 2] * selectedGain)
       }
-      dst[outputIndex + 3] = 255
+      result.data[to + 3] = 255
     }
+    outputContext.putImageData(result, 0, 0)
+    const inspection = inspectStitchQuality(result)
+    progress('完了', 6, 6)
+    return { ok: true, dataUrl: output.toDataURL('image/jpeg', 0.94), width: output.width, height: output.height, warnings: inspection.issues, qualityNotes: ['タイル境界は最も近い詳細画像を優先して合成しました。'] }
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '高解像度合成に失敗しました。', failedTiles: tileIds, retakeHint: '通常スキャンとして保存するか、撮影をやり直してください。' }
   }
-
-  outputCtx.putImageData(output, 0, 0)
-  return outputCanvas.toDataURL('image/jpeg', 0.97)
 }
