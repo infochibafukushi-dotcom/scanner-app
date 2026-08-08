@@ -4,7 +4,6 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 
 const SHOT_ORDER = ['左上', '右上', '右下', '左下'] as const
 export type HighResShotPosition = (typeof SHOT_ORDER)[number]
-
 export const HIGH_RES_SHOT_ORDER = SHOT_ORDER
 
 type EdgeMap = {
@@ -23,6 +22,13 @@ type Alignment = {
 type TilePosition = {
   x: number
   y: number
+}
+
+type PixelCandidate = {
+  score: number
+  r: number
+  g: number
+  b: number
 }
 
 const averageLuminance = (data: Uint8ClampedArray) => {
@@ -133,10 +139,10 @@ const findBestAlignment = (a: EdgeMap, b: EdgeMap, direction: 'horizontal' | 've
   const coarse = Math.max(2, Math.round(Math.min(a.width, a.height) / 45))
   const horizontal = direction === 'horizontal'
 
-  const dxMin = horizontal ? Math.round(a.width * 0.04) : -Math.round(a.width * 0.38)
-  const dxMax = horizontal ? Math.round(a.width * 0.9) : Math.round(a.width * 0.38)
-  const dyMin = horizontal ? -Math.round(a.height * 0.38) : Math.round(a.height * 0.04)
-  const dyMax = horizontal ? Math.round(a.height * 0.38) : Math.round(a.height * 0.9)
+  const dxMin = horizontal ? Math.round(a.width * 0.04) : -Math.round(a.width * 0.32)
+  const dxMax = horizontal ? Math.round(a.width * 0.88) : Math.round(a.width * 0.32)
+  const dyMin = horizontal ? -Math.round(a.height * 0.32) : Math.round(a.height * 0.04)
+  const dyMax = horizontal ? Math.round(a.height * 0.32) : Math.round(a.height * 0.88)
 
   let best: (Alignment & { score: number }) | null = null
 
@@ -148,7 +154,7 @@ const findBestAlignment = (a: EdgeMap, b: EdgeMap, direction: 'horizontal' | 've
     }
   }
 
-  if (!best) throw new Error('重複部分を検出できませんでした。隣の範囲を40%ほど重ねて撮影してください。')
+  if (!best) throw new Error('重複部分を検出できませんでした。隣の範囲を35〜45%ほど重ねて撮影してください。')
 
   const refineRadius = coarse * 2
   const coarseBest = best
@@ -160,19 +166,11 @@ const findBestAlignment = (a: EdgeMap, b: EdgeMap, direction: 'horizontal' | 've
     }
   }
 
-  if (best.correlation < 0.12 || best.overlapRatio < 0.12) {
-    throw new Error('4枚の位置合わせ精度が不足しています。距離と角度を保ち、隣の範囲を40%ほど重ねて撮影してください。')
+  if (best.correlation < 0.18 || best.overlapRatio < 0.12) {
+    throw new Error('4枚の位置合わせ精度が不足しています。紙の1/4を大きく写し、隣の範囲を35〜45%重ねてください。')
   }
 
   return best
-}
-
-const featherWeight = (x: number, y: number, width: number, height: number) => {
-  const featherX = Math.max(24, width * 0.16)
-  const featherY = Math.max(24, height * 0.16)
-  const wx = Math.min(1, x / featherX, (width - 1 - x) / featherX)
-  const wy = Math.min(1, y / featherY, (height - 1 - y) / featherY)
-  return Math.max(0.035, Math.min(wx, wy))
 }
 
 const alignmentToPixels = (alignment: Alignment, map: EdgeMap, tileWidth: number, tileHeight: number) => ({
@@ -180,9 +178,64 @@ const alignmentToPixels = (alignment: Alignment, map: EdgeMap, tileWidth: number
   y: alignment.dy * (tileHeight / map.height)
 })
 
+const validateGuidedShift = (
+  shift: { x: number; y: number },
+  direction: 'horizontal' | 'vertical',
+  tileWidth: number,
+  tileHeight: number
+) => {
+  if (direction === 'horizontal') {
+    const movement = shift.x / tileWidth
+    const cross = Math.abs(shift.y) / tileHeight
+    if (movement < 0.2) {
+      throw new Error('同じ範囲を撮りすぎています。紙全体ではなく、左上・右上など各1/4を画面いっぱいに大きく撮影してください。')
+    }
+    if (movement > 0.82) {
+      throw new Error('左右の写真の重なりが不足しています。隣の写真と35〜45%重なるように撮影してください。')
+    }
+    if (cross > 0.24) {
+      throw new Error('左右移動時の上下ずれが大きすぎます。スマホの高さと傾きを保って横へ移動してください。')
+    }
+    return
+  }
+
+  const movement = shift.y / tileHeight
+  const cross = Math.abs(shift.x) / tileWidth
+  if (movement < 0.2) {
+    throw new Error('同じ範囲を撮りすぎています。紙全体ではなく、上側・下側の各1/4を画面いっぱいに大きく撮影してください。')
+  }
+  if (movement > 0.82) {
+    throw new Error('上下の写真の重なりが不足しています。隣の写真と35〜45%重なるように撮影してください。')
+  }
+  if (cross > 0.24) {
+    throw new Error('上下移動時の左右ずれが大きすぎます。スマホの高さと傾きを保って縦へ移動してください。')
+  }
+}
+
 const weightedAverage = (a: number, aWeight: number, b: number, bWeight: number) => {
   const total = Math.max(1e-6, aWeight + bWeight)
   return (a * aWeight + b * bWeight) / total
+}
+
+const centerScore = (x: number, y: number, width: number, height: number) => {
+  const nx = Math.abs(x - (width - 1) / 2) / Math.max(1, width / 2)
+  const ny = Math.abs(y - (height - 1) / 2) / Math.max(1, height / 2)
+  return clamp(1 - Math.max(nx, ny), 0.001, 1)
+}
+
+const pushCandidate = (
+  candidates: PixelCandidate[],
+  source: Uint8ClampedArray,
+  sourceIndex: number,
+  gain: number,
+  score: number
+) => {
+  candidates.push({
+    score,
+    r: clamp(source[sourceIndex] * gain, 0, 255),
+    g: clamp(source[sourceIndex + 1] * gain, 0, 255),
+    b: clamp(source[sourceIndex + 2] * gain, 0, 255)
+  })
 }
 
 export const stitchHighResCaptures = async (dataUrls: string[]) => {
@@ -207,6 +260,11 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
   const rightShift = alignmentToPixels(right, maps[1], tileWidth, tileHeight)
   const bottomShift = alignmentToPixels(bottom, maps[3], tileWidth, tileHeight)
 
+  validateGuidedShift(topShift, 'horizontal', tileWidth, tileHeight)
+  validateGuidedShift(leftShift, 'vertical', tileWidth, tileHeight)
+  validateGuidedShift(rightShift, 'vertical', tileWidth, tileHeight)
+  validateGuidedShift(bottomShift, 'horizontal', tileWidth, tileHeight)
+
   const positions: TilePosition[] = [
     { x: 0, y: 0 },
     { x: topShift.x, y: topShift.y },
@@ -227,8 +285,8 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
     brFromTopRight.x - brFromBottomLeft.x,
     brFromTopRight.y - brFromBottomLeft.y
   )
-  if (disagreement > Math.min(tileWidth, tileHeight) * 0.2) {
-    throw new Error('4枚の位置関係が一致しません。端末の距離と傾きをなるべく一定にして撮影し直してください。')
+  if (disagreement > Math.min(tileWidth, tileHeight) * 0.14) {
+    throw new Error('4枚の位置関係が一致しません。スマホの高さ・距離・傾きをなるべく一定にして撮影し直してください。')
   }
 
   const rightWeight = Math.max(0.05, right.correlation)
@@ -252,7 +310,7 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
   const luminances = tiles.map((tile) => averageLuminance(tile.data))
   const sorted = [...luminances].sort((a, b) => a - b)
   const targetLuminance = (sorted[1] + sorted[2]) / 2
-  const exposure = luminances.map((value) => clamp(targetLuminance / Math.max(18, value), 0.8, 1.25))
+  const exposure = luminances.map((value) => clamp(targetLuminance / Math.max(18, value), 0.82, 1.22))
 
   const outputCanvas = document.createElement('canvas')
   outputCanvas.width = outputWidth
@@ -264,10 +322,7 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
 
   for (let y = 0; y < outputHeight; y += 1) {
     for (let x = 0; x < outputWidth; x += 1) {
-      let totalWeight = 0
-      let red = 0
-      let green = 0
-      let blue = 0
+      const candidates: PixelCandidate[] = []
 
       for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
         const position = offsetPositions[tileIndex]
@@ -278,18 +333,12 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
         const sx = Math.floor(localX)
         const sy = Math.floor(localY)
         const sourceIndex = (sy * tileWidth + sx) * 4
-        const source = tiles[tileIndex].data
-        const gain = exposure[tileIndex]
-        const weight = featherWeight(localX, localY, tileWidth, tileHeight)
-
-        red += clamp(source[sourceIndex] * gain, 0, 255) * weight
-        green += clamp(source[sourceIndex + 1] * gain, 0, 255) * weight
-        blue += clamp(source[sourceIndex + 2] * gain, 0, 255) * weight
-        totalWeight += weight
+        const score = centerScore(localX, localY, tileWidth, tileHeight)
+        pushCandidate(candidates, tiles[tileIndex].data, sourceIndex, exposure[tileIndex], score)
       }
 
       const outputIndex = (y * outputWidth + x) * 4
-      if (totalWeight <= 0.001) {
+      if (!candidates.length) {
         dst[outputIndex] = 245
         dst[outputIndex + 1] = 245
         dst[outputIndex + 2] = 245
@@ -297,13 +346,25 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
         continue
       }
 
-      dst[outputIndex] = Math.round(red / totalWeight)
-      dst[outputIndex + 1] = Math.round(green / totalWeight)
-      dst[outputIndex + 2] = Math.round(blue / totalWeight)
+      candidates.sort((a, b) => b.score - a.score)
+      const best = candidates[0]
+      const second = candidates[1]
+
+      // Prefer one sharp source in overlap areas. Only blend inside a very narrow
+      // score tie zone; broad averaging was the cause of doubled/blurred text.
+      if (second && Math.abs(best.score - second.score) < 0.025) {
+        dst[outputIndex] = Math.round((best.r + second.r) / 2)
+        dst[outputIndex + 1] = Math.round((best.g + second.g) / 2)
+        dst[outputIndex + 2] = Math.round((best.b + second.b) / 2)
+      } else {
+        dst[outputIndex] = Math.round(best.r)
+        dst[outputIndex + 1] = Math.round(best.g)
+        dst[outputIndex + 2] = Math.round(best.b)
+      }
       dst[outputIndex + 3] = 255
     }
   }
 
   outputCtx.putImageData(output, 0, 0)
-  return outputCanvas.toDataURL('image/jpeg', 0.96)
+  return outputCanvas.toDataURL('image/jpeg', 0.97)
 }
