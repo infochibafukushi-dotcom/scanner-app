@@ -58,6 +58,109 @@ const otsuThreshold = (histogram: Uint32Array, total: number) => {
   return bestThreshold
 }
 
+const boxBlur = (input: Uint8Array, width: number, height: number, radius: number) => {
+  const horizontal = new Float32Array(input.length)
+  const output = new Uint8Array(input.length)
+  const size = radius * 2 + 1
+
+  for (let y = 0; y < height; y += 1) {
+    let sum = 0
+    for (let x = -radius; x <= radius; x += 1) sum += input[y * width + clamp(x, 0, width - 1)]
+    for (let x = 0; x < width; x += 1) {
+      horizontal[y * width + x] = sum / size
+      const leaving = clamp(x - radius, 0, width - 1)
+      const entering = clamp(x + radius + 1, 0, width - 1)
+      sum += input[y * width + entering] - input[y * width + leaving]
+    }
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    let sum = 0
+    for (let y = -radius; y <= radius; y += 1) sum += horizontal[clamp(y, 0, height - 1) * width + x]
+    for (let y = 0; y < height; y += 1) {
+      output[y * width + x] = Math.round(sum / size)
+      const leaving = clamp(y - radius, 0, height - 1)
+      const entering = clamp(y + radius + 1, 0, height - 1)
+      sum += horizontal[entering * width + x] - horizontal[leaving * width + x]
+    }
+  }
+
+  return output
+}
+
+/**
+ * Estimate slowly changing page illumination on a small luminance map, then
+ * normalize each source pixel against that background. This removes broad
+ * phone/hand shadows without needing OpenCV and keeps the operation cheap
+ * enough for a mobile PWA.
+ */
+const enhanceDocument = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+  const imageData = ctx.getImageData(0, 0, width, height)
+  const { data } = imageData
+
+  const mapMaxSide = 320
+  const mapScale = Math.min(1, mapMaxSide / Math.max(width, height))
+  const mapWidth = Math.max(24, Math.round(width * mapScale))
+  const mapHeight = Math.max(24, Math.round(height * mapScale))
+  const luminanceMap = new Uint8Array(mapWidth * mapHeight)
+
+  for (let my = 0; my < mapHeight; my += 1) {
+    const sy = clamp(Math.round(((my + 0.5) / mapHeight) * height - 0.5), 0, height - 1)
+    for (let mx = 0; mx < mapWidth; mx += 1) {
+      const sx = clamp(Math.round(((mx + 0.5) / mapWidth) * width - 0.5), 0, width - 1)
+      const index = (sy * width + sx) * 4
+      luminanceMap[my * mapWidth + mx] = grayscale(data[index], data[index + 1], data[index + 2])
+    }
+  }
+
+  const blurRadius = Math.max(6, Math.round(Math.min(mapWidth, mapHeight) * 0.055))
+  const background = boxBlur(luminanceMap, mapWidth, mapHeight, blurRadius)
+  const correctedLuminance = new Uint8Array(width * height)
+  const correctedHistogram = new Uint32Array(256)
+
+  for (let y = 0; y < height; y += 1) {
+    const my = clamp(Math.round((y / Math.max(1, height - 1)) * (mapHeight - 1)), 0, mapHeight - 1)
+    for (let x = 0; x < width; x += 1) {
+      const mx = clamp(Math.round((x / Math.max(1, width - 1)) * (mapWidth - 1)), 0, mapWidth - 1)
+      const pixel = y * width + x
+      const index = pixel * 4
+      const sourceY = grayscale(data[index], data[index + 1], data[index + 2])
+      const localBackground = Math.max(42, background[my * mapWidth + mx])
+
+      // Bring the estimated paper background toward a bright neutral value.
+      // Limit the gain so dark photos are improved without amplifying noise.
+      const illuminationGain = clamp(232 / localBackground, 0.78, 2.35)
+      const shadowCorrected = clamp(sourceY * illuminationGain, 0, 255)
+      const value = Math.round(shadowCorrected)
+      correctedLuminance[pixel] = value
+      correctedHistogram[value] += 1
+    }
+  }
+
+  const total = width * height
+  const low = percentileFromHistogram(correctedHistogram, total, 0.012)
+  const high = percentileFromHistogram(correctedHistogram, total, 0.992)
+  const range = Math.max(56, high - low)
+
+  for (let pixel = 0, i = 0; i < data.length; i += 4, pixel += 1) {
+    const sourceY = Math.max(1, grayscale(data[i], data[i + 1], data[i + 2]))
+    const correctedY = correctedLuminance[pixel]
+    const stretched = clamp(((correctedY - low) / range) * 255, 0, 255)
+
+    // Blend auto-levels instead of applying a full hard stretch so color pages
+    // remain natural while paper backgrounds become cleaner and more even.
+    const leveled = clamp(correctedY * 0.38 + stretched * 0.62, 0, 255)
+    const contrasted = clamp((leveled - 128) * 1.04 + 128, 0, 255)
+    const factor = clamp(contrasted / sourceY, 0.3, 3.6)
+
+    data[i] = Math.round(clamp(data[i] * factor, 0, 255))
+    data[i + 1] = Math.round(clamp(data[i + 1] * factor, 0, 255))
+    data[i + 2] = Math.round(clamp(data[i + 2] * factor, 0, 255))
+  }
+
+  ctx.putImageData(imageData, 0, 0)
+}
+
 const applyFilter = (ctx: CanvasRenderingContext2D, filter: FilterMode, width: number, height: number) => {
   if (filter === 'color') return
 
@@ -238,9 +341,13 @@ export const renderScanPage = async (page: ScanPage, maxSide = 1600): Promise<HT
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
   sourceCtx.drawImage(sourceImage, 0, 0)
 
+  // Final document pipeline:
+  // perspective correction -> background illumination estimation -> shadow removal
+  // -> automatic brightness/contrast -> selected image mode -> rotation/OCR/export.
   const correctedCanvas = warpPerspective(sourceCanvas, page.corners, maxSide)
-  const correctedCtx = correctedCanvas.getContext('2d')
+  const correctedCtx = correctedCanvas.getContext('2d', { willReadFrequently: true })
   if (!correctedCtx) throw new Error('Canvas context could not be created.')
+  enhanceDocument(correctedCtx, correctedCanvas.width, correctedCanvas.height)
   applyFilter(correctedCtx, page.filter, correctedCanvas.width, correctedCanvas.height)
 
   const rotation = normalizeRotation(page.rotation)
