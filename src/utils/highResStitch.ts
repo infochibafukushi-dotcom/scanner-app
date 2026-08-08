@@ -44,7 +44,6 @@ const createTile = async (dataUrl: string, width: number, height: number) => {
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) throw new Error('Canvas context could not be created.')
 
-  // Remove a small unstable camera border while keeping almost all source pixels.
   const cropRatio = 0.97
   const sourceWidth = image.width * cropRatio
   const sourceHeight = image.height * cropRatio
@@ -77,7 +76,6 @@ const createEdgeMap = (imageData: ImageData, maxSide = 190): EdgeMap => {
     for (let x = 1; x < width - 1; x += 1) {
       const horizontal = gray[y * width + x + 1] - gray[y * width + x - 1]
       const vertical = gray[(y + 1) * width + x] - gray[(y - 1) * width + x]
-      // Text and plan lines are much more stable matching features than brightness.
       edges[y * width + x] = Math.min(255, Math.abs(horizontal) + Math.abs(vertical))
     }
   }
@@ -127,7 +125,6 @@ const scoreOffset = (a: EdgeMap, b: EdgeMap, dx: number, dy: number, sampleStep:
   return {
     correlation,
     overlapRatio,
-    // Slightly prefer matches with a healthy overlap when correlation is similar.
     score: correlation + Math.min(0.04, overlapRatio * 0.06)
   }
 }
@@ -147,9 +144,7 @@ const findBestAlignment = (a: EdgeMap, b: EdgeMap, direction: 'horizontal' | 've
     for (let dx = dxMin; dx <= dxMax; dx += coarse) {
       const result = scoreOffset(a, b, dx, dy, 3)
       if (!result) continue
-      if (!best || result.score > best.score) {
-        best = { dx, dy, ...result }
-      }
+      if (!best || result.score > best.score) best = { dx, dy, ...result }
     }
   }
 
@@ -190,15 +185,6 @@ const weightedAverage = (a: number, aWeight: number, b: number, bWeight: number)
   return (a * aWeight + b * bWeight) / total
 }
 
-/**
- * Four-part document stitcher.
- * Capture order: top-left, top-right, bottom-right, bottom-left.
- *
- * Unlike the first fixed-grid implementation, this version searches the actual
- * overlapping text/line edges and estimates the translation of every adjacent
- * capture before blending. If the four matches disagree too much it fails
- * instead of returning a visibly doubled document.
- */
 export const stitchHighResCaptures = async (dataUrls: string[]) => {
   if (dataUrls.length !== 4) throw new Error('高精細スキャンには4枚の写真が必要です。')
 
@@ -211,7 +197,6 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
   const tiles = await Promise.all(dataUrls.map((dataUrl) => createTile(dataUrl, tileWidth, tileHeight)))
   const maps = tiles.map((tile) => createEdgeMap(tile))
 
-  // Find the real overlap rather than assuming every capture moved exactly 70%.
   const top = findBestAlignment(maps[0], maps[1], 'horizontal')
   const left = findBestAlignment(maps[0], maps[3], 'vertical')
   const right = findBestAlignment(maps[1], maps[2], 'vertical')
@@ -255,8 +240,8 @@ export const stitchHighResCaptures = async (dataUrls: string[]) => {
 
   const minX = Math.floor(Math.min(...positions.map((position) => position.x)))
   const minY = Math.floor(Math.min(...positions.map((position) => position.y)))
-  const maxX = Math.ceil(Math.max(...positions.map((position) => position.x + tileWidth))
-  const maxY = Math.ceil(Math.max(...positions.map((position) => position.y + tileHeight))
+  const maxX = Math.ceil(Math.max(...positions.map((position) => position.x + tileWidth)))
+  const maxY = Math.ceil(Math.max(...positions.map((position) => position.y + tileHeight)))
   const outputWidth = Math.max(1, maxX - minX)
   const outputHeight = Math.max(1, maxY - minY)
   const offsetPositions = positions.map((position) => ({
