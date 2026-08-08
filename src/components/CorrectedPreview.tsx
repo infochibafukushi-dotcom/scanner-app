@@ -1,0 +1,57 @@
+import { useEffect, useState } from 'react'
+import type { ScanPage } from '../types'
+import { renderScanPage } from '../utils/image'
+
+type CorrectedPreviewProps = {
+  page: ScanPage
+}
+
+export function CorrectedPreview({ page }: CorrectedPreviewProps) {
+  const [imageUrl, setImageUrl] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      setError('')
+
+      renderScanPage(page, 900)
+        .then((canvas) => {
+          if (!cancelled) setImageUrl(canvas.toDataURL('image/jpeg', 0.88))
+        })
+        .catch((previewError) => {
+          console.error(previewError)
+          if (!cancelled) setError('台形補正プレビューを作成できませんでした。四隅の位置を確認してください。')
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }, 220)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [page])
+
+  return (
+    <div className="card corrected-preview-card">
+      <div className="section-title-row corrected-preview-title">
+        <div>
+          <h2>台形補正後プレビュー</h2>
+          <p>四隅・回転・カラー/グレー/白黒を反映した、保存時と同じ形です。</p>
+        </div>
+        {loading && <span>更新中…</span>}
+      </div>
+
+      {error && <div className="preview-error-inline">{error}</div>}
+      {!error && imageUrl && (
+        <div className="corrected-preview-image-wrap">
+          <img src={imageUrl} alt="台形補正後プレビュー" className="corrected-preview-image" />
+        </div>
+      )}
+    </div>
+  )
+}
