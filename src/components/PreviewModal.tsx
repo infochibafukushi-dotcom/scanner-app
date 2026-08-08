@@ -3,7 +3,7 @@ import type { ScanPage } from '../types'
 import { renderScanPage } from '../utils/image'
 import '../preview.css'
 
-type PreviewIntent = 'preview' | 'save' | 'share'
+type PreviewIntent = 'preview' | 'save' | 'share' | 'text' | 'word'
 
 type PreviewModalProps = {
   open: boolean
@@ -11,12 +11,27 @@ type PreviewModalProps = {
   fileName: string
   intent: PreviewIntent
   busy: boolean
+  ocrStatus: string
   onClose: () => void
   onSave: () => void
   onShare: () => void
+  onSaveText: () => void
+  onSaveWord: () => void
 }
 
-export function PreviewModal({ open, pages, fileName, intent, busy, onClose, onSave, onShare }: PreviewModalProps) {
+export function PreviewModal({
+  open,
+  pages,
+  fileName,
+  intent,
+  busy,
+  ocrStatus,
+  onClose,
+  onSave,
+  onShare,
+  onSaveText,
+  onSaveWord
+}: PreviewModalProps) {
   const [images, setImages] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -64,6 +79,7 @@ export function PreviewModal({ open, pages, fileName, intent, busy, onClose, onS
 
       <div className="preview-content">
         {loading && <div className="preview-loading">補正後イメージを作成しています…</div>}
+        {ocrStatus && <div className="preview-loading ocr-status">{ocrStatus}</div>}
         {error && <div className="preview-error">{error}</div>}
         {!loading && !error && images.map((image, index) => (
           <article className="preview-page" key={`${index}-${image.slice(-12)}`}>
@@ -73,14 +89,21 @@ export function PreviewModal({ open, pages, fileName, intent, busy, onClose, onS
         ))}
       </div>
 
-      <div className="preview-actions">
+      <div className="preview-actions preview-actions-formats">
         <button type="button" className={intent === 'save' ? 'primary-button' : 'secondary-button'} onClick={onSave} disabled={loading || !!error || busy}>
-          この内容でPDF保存
+          PDF保存
+        </button>
+        <button type="button" className={intent === 'text' ? 'primary-button' : 'secondary-button'} onClick={onSaveText} disabled={loading || !!error || busy}>
+          テキスト保存
+        </button>
+        <button type="button" className={intent === 'word' ? 'primary-button' : 'secondary-button'} onClick={onSaveWord} disabled={loading || !!error || busy}>
+          Word保存
         </button>
         <button type="button" className={intent === 'share' ? 'primary-button' : 'secondary-button'} onClick={onShare} disabled={loading || !!error || busy}>
-          この内容で共有
+          PDF共有
         </button>
       </div>
+      <div className="preview-footnote">テキスト・Word保存は日本語＋英語OCRを行います。初回はOCRデータの読み込みに時間がかかる場合があります。</div>
     </div>
   )
 }
