@@ -1,9 +1,12 @@
 import { ChangeEvent, useMemo, useState } from 'react'
 import { CameraCapture } from './components/CameraCapture'
 import { CornerEditor } from './components/CornerEditor'
+import { PreviewModal } from './components/PreviewModal'
 import type { FilterMode, ScanPage } from './types'
-import { defaultCorners } from './utils/image'
+import { detectDocumentCorners } from './utils/image'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
+
+type PreviewIntent = 'preview' | 'save' | 'share'
 
 const initialFileName = () => {
   const date = new Date()
@@ -23,14 +26,18 @@ const readAsDataUrl = (file: File) =>
     reader.readAsDataURL(file)
   })
 
-const makePage = (dataUrl: string, name: string): ScanPage => ({
-  id: crypto.randomUUID(),
-  name,
-  dataUrl,
-  corners: defaultCorners(),
-  rotation: 0,
-  filter: 'color'
-})
+const makePage = async (dataUrl: string, name: string): Promise<ScanPage> => {
+  const detection = await detectDocumentCorners(dataUrl)
+  return {
+    id: crypto.randomUUID(),
+    name,
+    dataUrl,
+    corners: detection.corners,
+    cornerDetection: detection.detected ? 'auto' : 'fallback',
+    rotation: 0,
+    filter: 'color'
+  }
+}
 
 const filters: { key: FilterMode; label: string }[] = [
   { key: 'color', label: 'カラー' },
@@ -43,7 +50,10 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
+  const [detectingId, setDetectingId] = useState<string | null>(null)
   const [fileName, setFileName] = useState(initialFileName())
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewIntent, setPreviewIntent] = useState<PreviewIntent>('preview')
   const selectedPage = useMemo(() => pages.find((page) => page.id === selectedId) ?? null, [pages, selectedId])
 
   const appendPage = (page: ScanPage) => {
@@ -51,19 +61,27 @@ export default function App() {
     setSelectedId((current) => current ?? page.id)
   }
 
-  const addCapturedPage = (dataUrl: string) => {
+  const addCapturedPage = async (dataUrl: string) => {
     const pageNumber = pages.length + 1
-    appendPage(makePage(dataUrl, `撮影-${pageNumber}`))
+    const page = await makePage(dataUrl, `撮影-${pageNumber}`)
+    appendPage(page)
   }
 
   const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
     if (!files.length) return
 
-    const nextPages = await Promise.all(files.map(async (file) => makePage(await readAsDataUrl(file), file.name)))
-    setPages((current) => [...current, ...nextPages])
-    setSelectedId((current) => current ?? nextPages[0]?.id ?? null)
-    event.target.value = ''
+    setIsBusy(true)
+    try {
+      const nextPages = await Promise.all(
+        files.map(async (file) => makePage(await readAsDataUrl(file), file.name))
+      )
+      setPages((current) => [...current, ...nextPages])
+      setSelectedId((current) => current ?? nextPages[0]?.id ?? null)
+    } finally {
+      setIsBusy(false)
+      event.target.value = ''
+    }
   }
 
   const updatePage = (pageId: string, updater: (page: ScanPage) => ScanPage) => {
@@ -90,11 +108,33 @@ export default function App() {
     })
   }
 
-  const exportPdf = async () => {
+  const redetectCorners = async (page: ScanPage) => {
+    setDetectingId(page.id)
+    try {
+      const detection = await detectDocumentCorners(page.dataUrl)
+      updatePage(page.id, (current) => ({
+        ...current,
+        corners: detection.corners,
+        cornerDetection: detection.detected ? 'auto' : 'fallback'
+      }))
+      if (!detection.detected) window.alert('書類の輪郭を自動判定できませんでした。青い四隅を手動で合わせてください。')
+    } finally {
+      setDetectingId(null)
+    }
+  }
+
+  const openPreview = (intent: PreviewIntent) => {
+    if (!pages.length) return
+    setPreviewIntent(intent)
+    setPreviewOpen(true)
+  }
+
+  const performExportPdf = async () => {
     if (!pages.length) return
     setIsBusy(true)
     try {
       await downloadPdf(pages, fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`)
+      setPreviewOpen(false)
     } catch (error) {
       console.error(error)
       window.alert('PDFの作成に失敗しました。四隅の位置を確認してください。')
@@ -103,7 +143,7 @@ export default function App() {
     }
   }
 
-  const sharePdf = async () => {
+  const performSharePdf = async () => {
     if (!pages.length) return
     setIsBusy(true)
     try {
@@ -113,10 +153,12 @@ export default function App() {
 
       if (navigator.canShare?.({ files: [file] })) {
         await navigator.share({ files: [file], title: finalName })
+        setPreviewOpen(false)
         return
       }
 
       await downloadPdf(pages, finalName)
+      setPreviewOpen(false)
       window.alert('この端末ではファイル共有に対応していないため、PDFを保存しました。')
     } catch (error) {
       if ((error as DOMException)?.name === 'AbortError') return
@@ -130,12 +172,22 @@ export default function App() {
   return (
     <div className="app-shell">
       <CameraCapture open={cameraOpen} onClose={() => setCameraOpen(false)} onCapture={addCapturedPage} />
+      <PreviewModal
+        open={previewOpen}
+        pages={pages}
+        fileName={fileName}
+        intent={previewIntent}
+        busy={isBusy}
+        onClose={() => setPreviewOpen(false)}
+        onSave={performExportPdf}
+        onShare={performSharePdf}
+      />
 
       <header className="hero">
         <div>
           <span className="badge">PWA / ホーム画面追加対応</span>
           <h1>Scanner</h1>
-          <p>連続撮影、四隅補正、複数ページ結合、PDF保存・共有を1つの画面で行えます。</p>
+          <p>連続撮影、四隅自動判定・補正、保存前プレビュー、複数ページPDF保存・共有に対応します。</p>
         </div>
         <div className="hero-actions">
           <button type="button" className="primary-button" onClick={() => setCameraOpen(true)}>
@@ -145,8 +197,9 @@ export default function App() {
             <input type="file" accept="image/*" multiple onChange={addFiles} hidden />
             写真から追加
           </label>
-          <button type="button" className="secondary-button" onClick={exportPdf} disabled={!pages.length || isBusy}>PDF保存</button>
-          <button type="button" className="secondary-button" onClick={sharePdf} disabled={!pages.length || isBusy}>共有</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('preview')} disabled={!pages.length || isBusy}>仕上がり確認</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('save')} disabled={!pages.length || isBusy}>PDF保存</button>
+          <button type="button" className="secondary-button" onClick={() => openPreview('share')} disabled={!pages.length || isBusy}>共有</button>
         </div>
       </header>
 
@@ -176,6 +229,7 @@ export default function App() {
                 <div className="thumbnail-meta">
                   <strong>{index + 1}. {page.name}</strong>
                   <span>{page.filter === 'color' ? 'カラー' : page.filter === 'gray' ? 'グレー' : '白黒'}</span>
+                  <span>{page.cornerDetection === 'auto' ? '四隅: 自動' : page.cornerDetection === 'manual' ? '四隅: 手動調整済み' : '四隅: 要確認'}</span>
                 </div>
               </button>
             ))}
@@ -189,7 +243,7 @@ export default function App() {
               <span>ファイル名</span>
               <input value={fileName} onChange={(event) => setFileName(event.target.value)} />
             </label>
-            <p className="helper-text">「共有」を押すとスマホの共有メニューが開き、LINE・メール・Google Driveなどを選択できます。</p>
+            <p className="helper-text">PDF保存・共有の前に、実際の台形補正・画像モードを反映した仕上がりプレビューを表示します。</p>
           </div>
 
           {selectedPage ? (
@@ -223,7 +277,10 @@ export default function App() {
               <CornerEditor
                 imageUrl={selectedPage.dataUrl}
                 corners={selectedPage.corners}
-                onChange={(corners) => updatePage(selectedPage.id, (page) => ({ ...page, corners }))}
+                detectionMode={selectedPage.cornerDetection}
+                detecting={detectingId === selectedPage.id}
+                onChange={(corners) => updatePage(selectedPage.id, (page) => ({ ...page, corners, cornerDetection: 'manual' }))}
+                onRedetect={() => redetectCorners(selectedPage)}
               />
             </>
           ) : (
