@@ -399,7 +399,11 @@ export default function App() {
     updatePage(page.id, (current) => ({ ...current, ocrStatus: 'processing', ocrError: undefined }))
     try {
       const text = await recognizePage(page, (message, progress) =>
-        setPageOcrStatus(`文字を読み取っています…${progress > 0 ? ` ${Math.round(progress * 100)}%` : ''}\n${message}`)
+        setPageOcrStatus(
+          `文字を読み取っています…${progress > 0 ? ` ${Math.round(progress * 100)}%` : ''}${
+            message && !message.includes('文字を読み取') ? `\n${message}` : ''
+          }`
+        )
       )
       updatePage(page.id, (current) => ({
         ...current,
@@ -414,7 +418,7 @@ export default function App() {
       updatePage(page.id, (current) => ({
         ...current,
         ocrStatus: 'error',
-        ocrError: '文字の読み取りに失敗しました。',
+        ocrError: '文字の読み取りに失敗しました。\n画像を確認して、もう一度お試しください。',
         ...(force ? { ocrText: undefined } : {})
       }))
     } finally {
@@ -427,22 +431,22 @@ export default function App() {
     if (!pages.length || anyBusy) return
     setPanelBusy(true)
     setGptFallbackVisible(false)
-    setPageOcrStatus('GPT共有のため文字を読み取っています…')
+    setPageOcrStatus('ChatGPTへ共有するため、\n文字を読み取っています…')
     const workingPages = pages
     try {
       const { texts, updates } = await collectPageTexts(workingPages, (current, total) =>
-        setPageOcrStatus(`GPT共有のため文字を読み取っています\n${current} / ${total}ページ`)
+        setPageOcrStatus(`ChatGPTへ共有するため、\n文字を読み取っています…\n${current} / ${total}ページ`)
       )
       const nextPages = applyOcrUpdates(workingPages, updates)
       setPages(nextPages)
       setPageOcrStatus('共有準備中…')
       const result = await sharePagesWithGpt(nextPages, texts)
       if (result.type === 'clipboard') setGptFallbackVisible(true)
-      else if (result.type === 'failed') window.alert(result.message || 'GPT共有に失敗しました。')
+      else if (result.type === 'failed') window.alert(result.message || 'ChatGPTへの共有に失敗しました。')
     } catch (error) {
       if ((error as DOMException)?.name !== 'AbortError') {
         console.error(error)
-        window.alert('GPT共有に失敗しました。')
+        window.alert('ChatGPTへの共有に失敗しました。')
       }
     } finally {
       setPageOcrStatus('')
@@ -874,12 +878,13 @@ export default function App() {
           <button
             type="button"
             className={editTool === 'ocr' ? 'active' : ''}
+            aria-label="文字読取"
             onClick={() => {
               setEditTool('ocr')
               void runPageOcr(selectedPage, false)
             }}
           >
-            OCR
+            文字読取
           </button>
         </div>
       )}
@@ -925,7 +930,7 @@ export default function App() {
                 }}
                 disabled={!pages.length || anyBusy}
               >
-                GPT共有
+                ChatGPTへ共有
               </button>
             </div>
           </section>

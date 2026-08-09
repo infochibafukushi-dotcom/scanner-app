@@ -72,7 +72,7 @@ export const buildGptDocumentPrompt = (texts: string[]) => {
 
   return [
     '以下はスキャンした文書です。',
-    '画像とOCR結果を確認してください。',
+    '画像と読み取った文字を確認してください。',
     '',
     '必要に応じて、',
     '・内容整理',
@@ -82,7 +82,7 @@ export const buildGptDocumentPrompt = (texts: string[]) => {
     '・質問への回答',
     'を行ってください。',
     '',
-    '【OCR結果】',
+    '【読み取った文字】',
     '',
     body
   ].join('\n')
@@ -90,7 +90,7 @@ export const buildGptDocumentPrompt = (texts: string[]) => {
 
 export const buildGptTranslationPrompt = (sourceText: string, translationText: string) =>
   [
-    '以下はスキャン文書のOCR結果と翻訳結果です。',
+    '以下はスキャン文書の読み取り結果と翻訳結果です。',
     '内容を確認してください。',
     '',
     '【原文】',

@@ -103,7 +103,9 @@ export function PreviewModal({
           PDF共有
         </button>
       </div>
-      <div className="preview-footnote">テキスト・Word保存は日本語＋英語OCRを行います。初回はOCRデータの読み込みに時間がかかる場合があります。</div>
+      <div className="preview-footnote">
+        テキスト・Word保存では、必要に応じて日本語と英語の文字読取を行います。初回は読み取りデータの準備に時間がかかる場合があります。
+      </div>
     </div>
   )
 }

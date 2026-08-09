@@ -234,7 +234,7 @@ export function TranslationPanel({ page, busy, openSignal = 0, onBusyChange, onU
               <p>{unsupported ? 'このブラウザではアプリ内翻訳に対応していません' : 'アプリ内翻訳を利用できませんでした'}</p>
               <div className="button-row wrap">
                 <button type="button" className="chip" onClick={handleGptTranslateFallback} disabled={!sourceText.trim()}>
-                  GPTで翻訳
+                  ChatGPTで翻訳
                 </button>
                 <button type="button" className="chip" onClick={handleGoogleTranslate} disabled={!sourceText.trim()}>
                   Google翻訳で開く
@@ -268,8 +268,14 @@ export function TranslationPanel({ page, busy, openSignal = 0, onBusyChange, onU
                 <button type="button" className="chip" onClick={handleShare} disabled={isProcessing || !translationText}>
                   共有
                 </button>
-                <button type="button" className="chip" onClick={handleGptShare} disabled={isProcessing}>
-                  GPTへ共有
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={handleGptShare}
+                  disabled={isProcessing}
+                  aria-label="ChatGPTへ共有"
+                >
+                  ChatGPTへ共有
                 </button>
               </div>
             </>
@@ -277,7 +283,7 @@ export function TranslationPanel({ page, busy, openSignal = 0, onBusyChange, onU
 
           {gptFallbackVisible && (
             <div className="fallback-box">
-              <p>GPT用テキストをコピーしました。ChatGPTで貼り付けてください。</p>
+              <p>ChatGPT用テキストをコピーしました。ChatGPTで貼り付けてください。</p>
               <div className="button-row wrap">
                 <button type="button" className="primary-button" onClick={openChatGpt}>ChatGPTを開く</button>
                 <button type="button" className="chip" onClick={() => setGptFallbackVisible(false)}>閉じる</button>

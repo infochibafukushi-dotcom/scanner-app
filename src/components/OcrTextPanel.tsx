@@ -67,11 +67,11 @@ export function OcrTextPanel({
   }
 
   const summaryLabel = () => {
-    if (page.ocrStatus === 'processing') return '読み取り中…'
-    if (page.ocrStatus === 'stale') return '要再読取'
+    if (page.ocrStatus === 'processing') return '文字を読み取っています…'
+    if (page.ocrStatus === 'stale') return '再読取が必要'
     if (page.ocrStatus === 'error') return '読み取り失敗'
-    if (hasResult) return text ? `${text.length}文字` : '結果あり（空）'
-    return 'OCR未実行'
+    if (page.ocrStatus === 'done' || hasResult) return text ? '文字読取済み' : '文字読取完了'
+    return '未読取'
   }
 
   return (
@@ -80,10 +80,13 @@ export function OcrTextPanel({
         type="button"
         className="accordion-toggle"
         aria-expanded={open}
+        aria-label="文字読取"
         onClick={() => setOpen((current) => !current)}
       >
-        <span className="accordion-chevron" aria-hidden>{open ? '▼' : '▶'}</span>
-        <span className="accordion-title">読み取ったテキスト</span>
+        <span className="accordion-chevron" aria-hidden>
+          {open ? '▼' : '▶'}
+        </span>
+        <span className="accordion-title">文字読取</span>
         <span className="accordion-summary">{summaryLabel()}</span>
       </button>
 
@@ -91,7 +94,7 @@ export function OcrTextPanel({
         <div className="accordion-body">
           {statusMessage && <div className="panel-status">{statusMessage}</div>}
           {page.ocrStatus === 'stale' && (
-            <div className="panel-hint">画像が変更されました。再読み取りしてください。</div>
+            <div className="panel-hint">画像が変更されました。再読取してください。</div>
           )}
           {page.ocrStatus === 'error' && page.ocrError && (
             <div className="panel-error">{page.ocrError}</div>
@@ -104,62 +107,110 @@ export function OcrTextPanel({
                 className="primary-button"
                 onClick={onRecognize}
                 disabled={isProcessing}
+                aria-label="文字を読み取る"
               >
                 文字を読み取る
               </button>
-              <button type="button" className="chip" onClick={onShareGpt} disabled={isProcessing}>
-                GPTへ共有
+              <button
+                type="button"
+                className="chip"
+                onClick={onShareGpt}
+                disabled={isProcessing}
+                aria-label="ChatGPTへ共有"
+              >
+                ChatGPTへ共有
               </button>
             </div>
           ) : (
             <>
               <label className="field">
-                <span>OCR結果：</span>
+                <span>読み取った文字</span>
                 <textarea
                   className="ocr-textarea"
                   value={text}
                   rows={8}
                   onChange={(event) => onTextChange(event.target.value)}
                   disabled={isProcessing}
-                  placeholder="認識結果がここに表示されます"
+                  placeholder="読み取った文字がここに表示されます"
+                  aria-label="読み取った文字"
                 />
               </label>
 
               <div className="button-row wrap">
-                <button type="button" className="chip" onClick={onRerecognize} disabled={isProcessing}>
-                  再読み取り
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={onRerecognize}
+                  disabled={isProcessing}
+                  aria-label="再読取"
+                >
+                  再読取
                 </button>
-                <button type="button" className="chip" onClick={handleCopy} disabled={isProcessing || !text}>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={handleCopy}
+                  disabled={isProcessing || !text}
+                  aria-label="コピー"
+                >
                   コピー
                 </button>
-                <button type="button" className="chip" onClick={handleShareText} disabled={isProcessing || !text}>
-                  テキスト共有
-                </button>
-                <button type="button" className="chip" onClick={onShareGpt} disabled={isProcessing}>
-                  GPTへ共有
-                </button>
-                <button type="button" className="chip" onClick={onOpenTranslation} disabled={isProcessing}>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={onOpenTranslation}
+                  disabled={isProcessing}
+                  aria-label="翻訳"
+                >
                   翻訳
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={handleShareText}
+                  disabled={isProcessing || !text}
+                  aria-label="共有"
+                >
+                  共有
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={onShareGpt}
+                  disabled={isProcessing}
+                  aria-label="ChatGPTへ共有"
+                >
+                  ChatGPTへ共有
                 </button>
               </div>
             </>
           )}
 
           {pageCount > 1 && (
-            <p className="helper-text">GPT共有は全{pageCount}ページ（現在 {pageIndex + 1} ページ目）をまとめて送ります。</p>
+            <p className="helper-text">
+              ChatGPTへ共有は全{pageCount}ページ（現在 {pageIndex + 1} ページ目）をまとめて送ります。
+            </p>
           )}
 
           {gptFallbackVisible && (
             <div className="fallback-box">
-              <p>GPT用テキストをコピーしました。ChatGPTで貼り付けて画像を添付してください。</p>
+              <p>ChatGPT用テキストをコピーしました。ChatGPTで貼り付けて画像を添付してください。</p>
               <div className="button-row wrap">
-                <button type="button" className="primary-button" onClick={openChatGpt}>ChatGPTを開く</button>
-                <button type="button" className="chip" onClick={onDismissGptFallback}>閉じる</button>
+                <button type="button" className="primary-button" onClick={openChatGpt}>
+                  ChatGPTを開く
+                </button>
+                <button type="button" className="chip" onClick={onDismissGptFallback}>
+                  閉じる
+                </button>
               </div>
             </div>
           )}
 
-          {toast && <div className="panel-toast" role="status">{toast}</div>}
+          {toast && (
+            <div className="panel-toast" role="status">
+              {toast}
+            </div>
+          )}
         </div>
       )}
     </div>

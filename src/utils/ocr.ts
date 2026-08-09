@@ -14,7 +14,7 @@ const getWorker = async () => {
       createWorker(['jpn', 'eng'], 1, {
         logger: (message) => {
           const progress = typeof message.progress === 'number' ? message.progress : 0
-          activeProgressHandler?.(message.status || 'OCR処理中', progress)
+          activeProgressHandler?.(message.status || '文字を読み取っています…', progress)
         }
       })
     )
@@ -42,9 +42,9 @@ export const recognizePage = async (
 ): Promise<string> => {
   activeProgressHandler = onProgress ?? null
   try {
-    onProgress?.('OCR: ページを準備中', 0)
+    onProgress?.('文字を読み取っています…', 0)
     const text = await recognizeCanvas(page)
-    onProgress?.('OCR: 完了', 1)
+    onProgress?.('文字を読み取りました', 1)
     return text
   } finally {
     activeProgressHandler = null
@@ -61,9 +61,15 @@ export const recognizePages = async (
   try {
     for (let index = 0; index < pages.length; index += 1) {
       const pageNumber = index + 1
-      onProgress?.(`OCR: ${pageNumber}/${pages.length}ページを準備中`, index / pages.length)
+      onProgress?.(
+        `文字を読み取っています…\n${pageNumber} / ${pages.length}ページ`,
+        index / pages.length
+      )
       texts.push(await recognizeCanvas(pages[index]))
-      onProgress?.(`OCR: ${pageNumber}/${pages.length}ページ完了`, pageNumber / pages.length)
+      onProgress?.(
+        `文字を読み取りました\n${pageNumber} / ${pages.length}ページ`,
+        pageNumber / pages.length
+      )
     }
 
     return texts
