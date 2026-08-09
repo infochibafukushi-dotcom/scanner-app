@@ -20,7 +20,7 @@ export function FilterToolbar({
   const current = normalizeFilter(filter)
   const filterHint = UI_FILTER_OPTIONS.find((item) => item.key === current)?.hint ?? ''
   const extraHint = flattenBook
-    ? '本の背付近のゆるい反りを広げ、中央の暗さも少し持ち上げます'
+    ? '円筒3Dモデルで本の反りを展開し、行のカーブも補正します'
     : clean
       ? '紙の汚れ・ボールペン寄りの跡を抑え、文字をシャープにします'
       : filterHint
@@ -51,7 +51,7 @@ export function FilterToolbar({
           className={flattenBook ? 'chip active' : 'chip'}
           onClick={onToggleFlattenBook}
           aria-pressed={flattenBook}
-          title="本のゆるいカーブを補正"
+          title="円筒3Dモデルで本の反りを補正"
         >
           本の反り {flattenBook ? 'ON' : 'OFF'}
         </button>

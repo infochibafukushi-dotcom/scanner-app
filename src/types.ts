@@ -54,7 +54,7 @@ export type ScanPage = {
   filter: FilterMode
   /** Speckle / handwriting cleanup + stronger sharpen (vFlat Clean寄せ). */
   clean: boolean
-  /** Approximate book-page curve flatten after perspective warp. */
+  /** 3D cylindrical book dewarp after perspective warp (geometric, no OpenCV). */
   flattenBook: boolean
   paperSize: PaperSize
   /** @deprecated Migrated into paperSize on load. */

@@ -1,5 +1,6 @@
 import type { FilterMode, Point, ScanPage } from '../types'
 import { applyAspectToSize, resolveTargetAspect } from './paper'
+import { applyBookDewarp } from './bookDewarp'
 
 /** Purpose-specific max side lengths to balance quality and mobile memory. */
 export const RENDER_MAX = {
@@ -246,80 +247,11 @@ const applyMildUnsharp = (ctx: CanvasRenderingContext2D, width: number, height: 
 }
 
 /**
- * Approximate book-page flatten: expand compressed spine region after planar warp.
- * Spine X is estimated from the darkest central column (gutter), not forced to mid.
+ * @deprecated Internal alias — prefer applyBookDewarp from bookDewarp.ts
+ * Kept as a thin wrapper so renderScanPage stays readable.
  */
-const applyBookFlatten = (source: HTMLCanvasElement, strength = 0.26): HTMLCanvasElement => {
-  const width = source.width
-  const height = source.height
-  if (width < 8 || height < 8 || strength <= 0) return source
-
-  const out = document.createElement('canvas')
-  out.width = width
-  out.height = height
-  const ctx = out.getContext('2d')
-  const srcCtx = source.getContext('2d', { willReadFrequently: true })
-  if (!ctx || !srcCtx) return source
-
-  const src = srcCtx.getImageData(0, 0, width, height)
-  const dst = ctx.createImageData(width, height)
-  const sData = src.data
-  const dData = dst.data
-
-  // Estimate spine from column darkness in the central band.
-  const start = Math.floor(width * 0.3)
-  const end = Math.ceil(width * 0.7)
-  const stepY = Math.max(1, Math.floor(height / 80))
-  let spineX = (width - 1) / 2
-  let best = Number.POSITIVE_INFINITY
-  for (let x = start; x <= end; x += 1) {
-    let sum = 0
-    let count = 0
-    for (let y = 0; y < height; y += stepY) {
-      const i = (y * width + x) * 4
-      sum += sData[i] * 0.299 + sData[i + 1] * 0.587 + sData[i + 2] * 0.114
-      count += 1
-    }
-    const score = sum / Math.max(1, count)
-    if (score < best) {
-      best = score
-      spineX = x
-    }
-  }
-
-  const leftSpan = Math.max(1, spineX)
-  const rightSpan = Math.max(1, width - 1 - spineX)
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const nx = x <= spineX ? (x - spineX) / leftSpan : (x - spineX) / rightSpan
-      const denom = 1 - strength * (1 - nx * nx)
-      const srcNx = nx * (denom <= 1e-4 ? 1 : 1 / denom)
-      const srcX = clamp(spineX + srcNx * (srcNx < 0 ? leftSpan : rightSpan), 0, width - 1)
-      const x0 = Math.floor(srcX)
-      const x1 = Math.min(width - 1, x0 + 1)
-      const t = srcX - x0
-      const dstIndex = (y * width + x) * 4
-      const i0 = (y * width + x0) * 4
-      const i1 = (y * width + x1) * 4
-      for (let channel = 0; channel < 4; channel += 1) {
-        dData[dstIndex + channel] = Math.round(sData[i0 + channel] * (1 - t) + sData[i1 + channel] * t)
-      }
-
-      // Lift dark gutter near the spine so text near the fold stays readable.
-      const dist = Math.abs(x - spineX) / Math.max(leftSpan, rightSpan)
-      if (dist < 0.18) {
-        const lift = (0.18 - dist) / 0.18 * 18
-        dData[dstIndex] = Math.round(clamp(dData[dstIndex] + lift, 0, 255))
-        dData[dstIndex + 1] = Math.round(clamp(dData[dstIndex + 1] + lift, 0, 255))
-        dData[dstIndex + 2] = Math.round(clamp(dData[dstIndex + 2] + lift, 0, 255))
-      }
-    }
-  }
-
-  ctx.putImageData(dst, 0, 0)
-  return out
-}
+const applyBookFlatten = (source: HTMLCanvasElement, strength = 0.38): HTMLCanvasElement =>
+  applyBookDewarp(source, strength)
 
 const applyAutoEnhance = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
   const imageData = ctx.getImageData(0, 0, width, height)
@@ -583,7 +515,7 @@ export const renderScanPage = async (
   )
   let working = correctedCanvas
   if (page.flattenBook) {
-    working = applyBookFlatten(correctedCanvas)
+    working = applyBookFlatten(correctedCanvas, 0.4)
   }
   const correctedCtx = working.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')
