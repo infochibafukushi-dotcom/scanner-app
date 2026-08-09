@@ -20,7 +20,8 @@ export type BookCaptureResult =
 const makeBookHalfPage = (
   dataUrl: string,
   name: string,
-  detection: CornerDetectionResult
+  detection: CornerDetectionResult,
+  bookSpineSide: 'left' | 'right'
 ): ScanPage => ({
   id: crypto.randomUUID(),
   name,
@@ -32,6 +33,7 @@ const makeBookHalfPage = (
   filter: 'color',
   clean: false,
   bookFlatten: 'precise',
+  bookSpineSide,
   paperSize: 'free',
   ocrStatus: 'idle',
   translationStatus: 'idle'
@@ -75,8 +77,8 @@ export const createPagesFromBookCapture = async (
     detectDocumentCorners(split.rightDataUrl)
   ])
 
-  const left = makeBookHalfPage(split.leftDataUrl, `${baseName}-左`, leftDetection)
-  const right = makeBookHalfPage(split.rightDataUrl, `${baseName}-右`, rightDetection)
+  const left = makeBookHalfPage(split.leftDataUrl, `${baseName}-左`, leftDetection, 'right')
+  const right = makeBookHalfPage(split.rightDataUrl, `${baseName}-右`, rightDetection, 'left')
   const pages = pageOrder === 'rtl' ? [right, left] : [left, right]
 
   return {

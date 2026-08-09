@@ -595,8 +595,14 @@ export default function App() {
         translationError: undefined
       })
 
-      const left = makeHalf(split.leftDataUrl, '左', leftDetection)
-      const right = makeHalf(split.rightDataUrl, '右', rightDetection)
+      const left = {
+        ...makeHalf(split.leftDataUrl, '左', leftDetection),
+        bookSpineSide: 'right' as const
+      }
+      const right = {
+        ...makeHalf(split.rightDataUrl, '右', rightDetection),
+        bookSpineSide: 'left' as const
+      }
 
       try {
         URL.revokeObjectURL(source.dataUrl)

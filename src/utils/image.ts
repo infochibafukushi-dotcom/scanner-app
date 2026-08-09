@@ -526,7 +526,7 @@ export const renderScanPage = async (
   let working = correctedCanvas
   const bookMode = normalizeBookFlatten(page.bookFlatten ?? page.flattenBook)
   if (bookMode !== 'off') {
-    working = applyBookFlattenMode(correctedCanvas, bookMode)
+    working = applyBookFlattenMode(correctedCanvas, bookMode, page.bookSpineSide)
   }
   const correctedCtx = working.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')

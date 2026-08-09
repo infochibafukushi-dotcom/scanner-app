@@ -5,18 +5,20 @@
  * Precise auto-falls back to simple when spine/curl confidence is low.
  */
 
-import type { BookFlattenMode } from '../types'
+import type { BookFlattenMode, BookSpineSide } from '../types'
 import { detectSpineFromRgba } from './spineDetect'
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
-export type { BookFlattenMode }
+export type { BookFlattenMode, BookSpineSide }
 
 export type BookDewarpOptions = {
   /** 0.15–0.55 typical. Higher = stronger curl unwrap. */
   strength?: number
   /** Skip confidence gate (tests only). */
   forcePrecise?: boolean
+  /** Known spine edge after a facing-page split; skips center auto-detect. */
+  spineSide?: BookSpineSide
 }
 
 export type BookDewarpStats = {
@@ -29,6 +31,7 @@ export type BookDewarpStats = {
   thetaMax: number
   curlLeft: number
   curlRight: number
+  spineSide?: BookSpineSide
 }
 
 const SPINE_CONFIDENCE_MIN = 0.48
@@ -54,14 +57,29 @@ export const detectSpineWithConfidence = (data: Uint8ClampedArray, width: number
 export const detectSpineX = (data: Uint8ClampedArray, width: number, height: number) =>
   detectSpineWithConfidence(data, width, height).spineX
 
+/** Resolve spine X for a full spread (auto) or a split single page (explicit side). */
+export const resolveBookSpine = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  spineSide?: BookSpineSide
+) => {
+  if (spineSide === 'left') return { spineX: 0, confidence: 1, spineSide }
+  if (spineSide === 'right') return { spineX: width - 1, confidence: 1, spineSide }
+  const detected = detectSpineWithConfidence(data, width, height)
+  return { spineX: detected.spineX, confidence: detected.confidence, spineSide: undefined as BookSpineSide | undefined }
+}
+
 /**
  * Estimate text baseline bow + confidence of that estimate.
+ * When spineSide is set, only the content side of the page is scored.
  */
 export const estimateTextLineCurl = (
   data: Uint8ClampedArray,
   width: number,
   height: number,
-  spineX: number
+  spineX: number,
+  spineSide?: BookSpineSide
 ) => {
   const bands = 7
   const samples: { x: number; y: number; edge: number }[] = []
@@ -119,12 +137,27 @@ export const estimateTextLineCurl = (
 
   const left = fitSide('left')
   const right = fitSide('right')
-  const sampleScore = clamp(samples.length / 80, 0, 1)
-  const residualScore = clamp(1 - (left.residual + right.residual) * 2.5, 0, 1)
-  const bow = Math.max(Math.abs(left.curl), Math.abs(right.curl)) / Math.max(1, height)
-  // Flat pages: low bow → low confidence (avoid 3D). Curved pages with stable fit → high.
-  const bowScore = clamp(bow / 0.035, 0, 1)
-  const confidence = clamp(sampleScore * 0.35 + residualScore * 0.35 + bowScore * 0.3, 0, 1)
+
+  const scoreSide = (side: { curl: number; residual: number; count: number }) => {
+    const sampleScore = clamp(side.count / 40, 0, 1)
+    const residualScore = clamp(1 - side.residual * 2.5, 0, 1)
+    const bow = Math.abs(side.curl) / Math.max(1, height)
+    const bowScore = clamp(bow / 0.035, 0, 1)
+    return clamp(sampleScore * 0.35 + residualScore * 0.35 + bowScore * 0.3, 0, 1)
+  }
+
+  let confidence: number
+  if (spineSide === 'left') {
+    confidence = scoreSide(right)
+  } else if (spineSide === 'right') {
+    confidence = scoreSide(left)
+  } else {
+    const sampleScore = clamp(samples.length / 80, 0, 1)
+    const residualScore = clamp(1 - (left.residual + right.residual) * 2.5, 0, 1)
+    const bow = Math.max(Math.abs(left.curl), Math.abs(right.curl)) / Math.max(1, height)
+    const bowScore = clamp(bow / 0.035, 0, 1)
+    confidence = clamp(sampleScore * 0.35 + residualScore * 0.35 + bowScore * 0.3, 0, 1)
+  }
 
   return {
     left: left.curl,
@@ -184,7 +217,11 @@ const sampleBilinear = (
  * Legacy lightweight horizontal expansion around the spine.
  * Safe fallback for flat documents / low-confidence precise mode.
  */
-export const applySimpleBookFlatten = (source: HTMLCanvasElement, strength = 0.26): HTMLCanvasElement => {
+export const applySimpleBookFlatten = (
+  source: HTMLCanvasElement,
+  strength = 0.26,
+  spineSide?: BookSpineSide
+): HTMLCanvasElement => {
   const width = source.width
   const height = source.height
   if (width < 8 || height < 8 || strength <= 0) return source
@@ -200,7 +237,8 @@ export const applySimpleBookFlatten = (source: HTMLCanvasElement, strength = 0.2
   const dst = ctx.createImageData(width, height)
   const sData = src.data
   const dData = dst.data
-  const { spineX } = detectSpineWithConfidence(sData, width, height)
+  const spine = resolveBookSpine(sData, width, height, spineSide)
+  const spineX = spine.spineX
   const leftSpan = Math.max(1, spineX)
   const rightSpan = Math.max(1, width - 1 - spineX)
 
@@ -253,7 +291,8 @@ export const dewarpBookCanvas = (
     viewDistance: width * 3,
     thetaMax: 0.5,
     curlLeft: 0,
-    curlRight: 0
+    curlRight: 0,
+    spineSide: options.spineSide
   })
 
   const srcCtx = source.getContext('2d', { willReadFrequently: true })
@@ -263,23 +302,27 @@ export const dewarpBookCanvas = (
 
   const src = srcCtx.getImageData(0, 0, width, height)
   const data = src.data
-  const spine = detectSpineWithConfidence(data, width, height)
-  const curls = estimateTextLineCurl(data, width, height, spine.spineX)
+  const spine = resolveBookSpine(data, width, height, options.spineSide)
+  const curls = estimateTextLineCurl(data, width, height, spine.spineX, options.spineSide)
 
+  const spineKnown = Boolean(options.spineSide)
   const canPrecise =
     options.forcePrecise ||
-    (spine.confidence >= SPINE_CONFIDENCE_MIN && curls.confidence >= CURL_CONFIDENCE_MIN)
+    (spineKnown
+      ? curls.confidence >= CURL_CONFIDENCE_MIN
+      : spine.confidence >= SPINE_CONFIDENCE_MIN && curls.confidence >= CURL_CONFIDENCE_MIN)
 
   if (!canPrecise) {
     return {
-      canvas: applySimpleBookFlatten(source, 0.26),
+      canvas: applySimpleBookFlatten(source, 0.26, options.spineSide),
       stats: {
         ...emptyStats('simple'),
         spineX: spine.spineX,
         spineConfidence: spine.confidence,
         curlConfidence: curls.confidence,
         curlLeft: curls.left,
-        curlRight: curls.right
+        curlRight: curls.right,
+        spineSide: options.spineSide
       }
     }
   }
@@ -299,12 +342,13 @@ export const dewarpBookCanvas = (
   const outCtx = out.getContext('2d')
   if (!outCtx) {
     return {
-      canvas: applySimpleBookFlatten(source, 0.26),
+      canvas: applySimpleBookFlatten(source, 0.26, options.spineSide),
       stats: {
         ...emptyStats('simple'),
         spineX: spine.spineX,
         spineConfidence: spine.confidence,
-        curlConfidence: curls.confidence
+        curlConfidence: curls.confidence,
+        spineSide: options.spineSide
       }
     }
   }
@@ -356,22 +400,27 @@ export const dewarpBookCanvas = (
       viewDistance,
       thetaMax,
       curlLeft: curls.left,
-      curlRight: curls.right
+      curlRight: curls.right,
+      spineSide: options.spineSide
     }
   }
 }
 
 /** Precise cylindrical dewarp (may auto-fallback to simple). */
-export const applyBookDewarp = (source: HTMLCanvasElement, strength = 0.36) =>
-  dewarpBookCanvas(source, { strength }).canvas
+export const applyBookDewarp = (
+  source: HTMLCanvasElement,
+  strength = 0.36,
+  spineSide?: BookSpineSide
+) => dewarpBookCanvas(source, { strength, spineSide }).canvas
 
 /** Apply flatten according to UI mode. `off` returns the source unchanged. */
 export const applyBookFlattenMode = (
   source: HTMLCanvasElement,
-  mode: BookFlattenMode
+  mode: BookFlattenMode,
+  spineSide?: BookSpineSide
 ): HTMLCanvasElement => {
   const normalized = normalizeBookFlatten(mode)
   if (normalized === 'off') return source
-  if (normalized === 'simple') return applySimpleBookFlatten(source, 0.26)
-  return applyBookDewarp(source, 0.4)
+  if (normalized === 'simple') return applySimpleBookFlatten(source, 0.26, spineSide)
+  return applyBookDewarp(source, 0.4, spineSide)
 }

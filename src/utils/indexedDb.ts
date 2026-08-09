@@ -1,4 +1,4 @@
-import type { BookFlattenMode, FilterMode, PaperSize, Point, ProcessStatus, ScanPage } from '../types'
+import type { BookFlattenMode, BookSpineSide, FilterMode, PaperSize, Point, ProcessStatus, ScanPage } from '../types'
 import { normalizeFilter } from '../types'
 import { normalizeBookFlatten } from './bookDewarp'
 import { migratePaperSize } from './paper'
@@ -26,6 +26,7 @@ type PageRecord = {
   filter: FilterMode
   clean: boolean
   bookFlatten?: BookFlattenMode
+  bookSpineSide?: BookSpineSide
   /** Legacy boolean; migrated to bookFlatten on load. */
   flattenBook?: boolean
   paperSize: PaperSize
@@ -141,6 +142,7 @@ const toPageRecord = (page: ScanPage, documentId: string): PageRecord => ({
   filter: normalizeFilter(page.filter),
   clean: page.clean,
   bookFlatten: normalizeBookFlatten(page.bookFlatten ?? page.flattenBook),
+  bookSpineSide: page.bookSpineSide,
   paperSize: migratePaperSize(page),
   ocrText: page.ocrText,
   ocrStatus: page.ocrStatus,
@@ -163,6 +165,7 @@ const fromPageRecord = (record: PageRecord, dataUrl: string): ScanPage => ({
   filter: normalizeFilter(record.filter),
   clean: Boolean(record.clean),
   bookFlatten: normalizeBookFlatten(record.bookFlatten ?? record.flattenBook),
+  bookSpineSide: record.bookSpineSide,
   paperSize: migratePaperSize(record),
   ocrText: record.ocrText,
   ocrStatus: record.ocrStatus,

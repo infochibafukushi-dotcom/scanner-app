@@ -4,7 +4,8 @@ import {
   detectSpineX,
   estimateCylinderParams,
   estimateTextLineCurl,
-  normalizeBookFlatten
+  normalizeBookFlatten,
+  resolveBookSpine
 } from './bookDewarp'
 
 const makeFlatGray = (width: number, height: number, fill = 220) => {
@@ -73,5 +74,39 @@ describe('bookDewarp', () => {
     }
     const curl = estimateTextLineCurl(data, width, height, 80)
     expect(curl.confidence).toBeLessThan(0.55)
+  })
+
+  it('uses explicit spine edges and ignores a dark center column', () => {
+    const width = 160
+    const height = 100
+    const data = makeFlatGray(width, height, 220)
+    for (let y = 0; y < height; y += 1) {
+      for (let dx = -2; dx <= 2; dx += 1) {
+        const x = 80 + dx
+        const i = (y * width + x) * 4
+        data[i] = data[i + 1] = data[i + 2] = 20
+      }
+    }
+    const left = resolveBookSpine(data, width, height, 'left')
+    const right = resolveBookSpine(data, width, height, 'right')
+    const auto = resolveBookSpine(data, width, height)
+    expect(left.spineX).toBe(0)
+    expect(right.spineX).toBe(width - 1)
+    expect(auto.spineX).toBeGreaterThan(70)
+    expect(auto.spineX).toBeLessThan(90)
+  })
+
+  it('scores single-page curl without requiring the missing side', () => {
+    const width = 120
+    const height = 100
+    const data = makeFlatGray(width, height, 230)
+    for (let x = 20; x < width - 4; x += 1) {
+      const bow = Math.floor(((x / width) * (x / width)) * 12)
+      const y = 50 + bow
+      const i = (y * width + x) * 4
+      data[i] = data[i + 1] = data[i + 2] = 25
+    }
+    const curl = estimateTextLineCurl(data, width, height, 0, 'left')
+    expect(Number.isFinite(curl.confidence)).toBe(true)
   })
 })

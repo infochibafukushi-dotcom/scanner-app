@@ -71,23 +71,21 @@ describe('createPagesFromBookCapture', () => {
     expect(result.pages).toHaveLength(1)
     expect(result.pages[0].dataUrl).toBe('weak-spine')
     expect(result.pages[0].bookFlatten).toBe('off')
+    expect(result.pages[0].bookSpineSide).toBeUndefined()
   })
 
-  it('creates two precise book pages in ltr order', async () => {
-    const result = await createPagesFromBookCapture('strong', '本-2', 'ltr')
-    expect(result.kind).toBe('split')
-    expect(result.pages).toHaveLength(2)
-    expect(result.pages[0].name).toContain('左')
-    expect(result.pages[1].name).toContain('右')
-    expect(result.pages[0].bookFlatten).toBe('precise')
-    expect(result.pages[0].paperSize).toBe('free')
-    expect(result.pages[0].cornerDetection).toBe('auto')
-  })
+  it('sets physical spine sides independent of page order', async () => {
+    const ltr = await createPagesFromBookCapture('strong', '本-2', 'ltr')
+    expect(ltr.pages[0].name).toContain('左')
+    expect(ltr.pages[0].bookSpineSide).toBe('right')
+    expect(ltr.pages[1].name).toContain('右')
+    expect(ltr.pages[1].bookSpineSide).toBe('left')
 
-  it('orders rtl as right then left', async () => {
-    const result = await createPagesFromBookCapture('strong', '本-3', 'rtl')
-    expect(result.pages[0].name).toContain('右')
-    expect(result.pages[1].name).toContain('左')
+    const rtl = await createPagesFromBookCapture('strong', '本-3', 'rtl')
+    expect(rtl.pages[0].name).toContain('右')
+    expect(rtl.pages[0].bookSpineSide).toBe('left')
+    expect(rtl.pages[1].name).toContain('左')
+    expect(rtl.pages[1].bookSpineSide).toBe('right')
   })
 
   it('keeps both pages when one side corner detection fails', async () => {
@@ -96,5 +94,7 @@ describe('createPagesFromBookCapture', () => {
     expect(result.pages).toHaveLength(2)
     expect(result.pages[0].cornerDetection).toBe('auto')
     expect(result.pages[1].cornerDetection).toBe('fallback')
+    expect(result.pages[0].bookSpineSide).toBe('right')
+    expect(result.pages[1].bookSpineSide).toBe('left')
   })
 })

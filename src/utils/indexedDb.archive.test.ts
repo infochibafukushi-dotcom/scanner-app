@@ -102,4 +102,22 @@ describe('indexedDb archiveDocument', () => {
     })
     expect(await countPagesForDocument(oldId)).toBe(3)
   })
+
+  it('persists optional bookSpineSide through save/load', async () => {
+    const page = {
+      ...makePage('s1', 'left-half'),
+      bookFlatten: 'precise' as const,
+      bookSpineSide: 'right' as const,
+      paperSize: 'free' as const
+    }
+    await saveDocument({
+      documentId: 'spine-doc',
+      fileName: 'spine.pdf',
+      selectedId: 's1',
+      pages: [page]
+    })
+    const restored = await loadActiveDocument()
+    expect(restored?.pages[0].bookSpineSide).toBe('right')
+    expect(restored?.pages[0].bookFlatten).toBe('precise')
+  })
 })

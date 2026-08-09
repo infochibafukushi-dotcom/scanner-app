@@ -3,6 +3,14 @@ export type FilterMode = 'auto' | 'color' | 'gray' | 'bw'
 /** Book page curl correction: off | lightweight | cylindrical 3D. */
 export type BookFlattenMode = 'off' | 'simple' | 'precise'
 
+/**
+ * Which edge of a single page is the book spine after a facing-page split.
+ * - left: spine on the left edge of this page image
+ * - right: spine on the right edge of this page image
+ * - undefined: auto-detect near image center (legacy / unsplit)
+ */
+export type BookSpineSide = 'left' | 'right'
+
 /** UI exposes auto/color/gray only; legacy `bw` maps to gray. */
 export const normalizeFilter = (filter: unknown): FilterMode => {
   if (filter === 'bw') return 'gray'
@@ -66,6 +74,11 @@ export type ScanPage = {
    * Legacy boolean `flattenBook` is migrated via normalizeBookFlatten.
    */
   bookFlatten: BookFlattenMode
+  /**
+   * After facing-page split: which edge is the spine for curl correction.
+   * Optional for backward compatibility with older saved pages.
+   */
+  bookSpineSide?: BookSpineSide
   /** @deprecated Migrated into bookFlatten. */
   flattenBook?: boolean
   paperSize: PaperSize

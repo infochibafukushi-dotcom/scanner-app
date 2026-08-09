@@ -6,6 +6,7 @@ import {
   BOOK_PAGE_CHANGE_DELTA,
   BOOK_PAGE_CHANGE_FRAMES,
   bookPageDifference,
+  canAutoCaptureFire,
   isBookPageChange,
   nextBookChangeStreak,
   shouldReArmBookPage
@@ -18,6 +19,7 @@ import {
 import { loadCaptureMode, saveCaptureMode } from '../utils/captureModeStorage'
 import {
   AUTO_CAPTURE_CONFIDENCE,
+  AUTO_CAPTURE_MOTION_MAX,
   AUTO_CAPTURE_STABLE_DELTA,
   AUTO_CAPTURE_STABLE_FRAMES
 } from '../utils/corners'
@@ -167,7 +169,14 @@ export function CameraView({
 
   const capture = useCallback(async () => {
     const video = videoRef.current
-    if (!video || !video.videoWidth || !video.videoHeight || capturingRef.current) return
+    if (
+      !video ||
+      !video.videoWidth ||
+      !video.videoHeight ||
+      !canAutoCaptureFire(capturingRef.current, captureProcessing)
+    ) {
+      return
+    }
     capturingRef.current = true
     try {
       const dataUrl = await captureStillDataUrl(trackRef.current, video, 'normal')
@@ -196,7 +205,7 @@ export function CameraView({
         capturingRef.current = false
       }, 220)
     }
-  }, [autoCapture, captureMode, mode, onCapture])
+  }, [autoCapture, captureMode, captureProcessing, mode, onCapture])
 
   useEffect(() => {
     if (!active) return
@@ -218,11 +227,10 @@ export function CameraView({
         lastDetectionRef.current = null
         displayCornersRef.current = null
         stableFramesRef.current = 0
-        if (!autoCapture) return
+        if (captureProcessing || !autoCapture) return
         if (!autoArmedRef.current) {
           missingSinceRef.current ??= Date.now()
           // Document left the frame long enough — re-arm for the next sheet.
-          // TODO: book capture mode needs content-diff based re-arm (page turns keep similar outer corners).
           if (Date.now() - missingSinceRef.current >= 850) {
             autoArmedRef.current = true
             lockedCornersRef.current = null
@@ -245,19 +253,24 @@ export function CameraView({
       lastCornersRef.current = result.corners
       const confident = result.confidence >= AUTO_CAPTURE_CONFIDENCE
 
-      if (!autoCapture) return
+      // Keep live guides during book split processing, but freeze auto-capture state machine.
+      if (captureProcessing || !autoCapture) return
 
       if (!autoArmedRef.current) {
         const locked = lockedCornersRef.current
         // Same-paper lock (document): require the sheet to leave frame or move corners a lot.
-        // Book mode ALSO re-arms on content change after a page turn.
+        // Book mode ALSO re-arms on content change after a page turn (only while the view is still).
         const movedAway = locked ? cornerDelta(locked, result.corners) > 0.18 : false
+        const stableView = motion.difference < AUTO_CAPTURE_MOTION_MAX
 
         let contentTurn = false
         if (captureMode === 'book' && capturedBookFrameRef.current) {
           const pageDiff = bookPageDifference(capturedBookFrameRef.current, frame)
           const changed = isBookPageChange(pageDiff, BOOK_PAGE_CHANGE_DELTA)
-          bookChangeFramesRef.current = nextBookChangeStreak(bookChangeFramesRef.current, changed)
+          bookChangeFramesRef.current = nextBookChangeStreak(
+            bookChangeFramesRef.current,
+            changed && stableView
+          )
           if (shouldReArmBookPage(bookChangeFramesRef.current, BOOK_PAGE_CHANGE_FRAMES)) {
             contentTurn = true
           }
@@ -288,7 +301,7 @@ export function CameraView({
       const stableCorners = previous
         ? cornerDelta(previous, result.corners) < AUTO_CAPTURE_STABLE_DELTA
         : false
-      const still = motion.difference < 6.5
+      const still = motion.difference < AUTO_CAPTURE_MOTION_MAX
       if (stableCorners && still) {
         stableFramesRef.current += 1
         setHoldMessage(
@@ -317,7 +330,7 @@ export function CameraView({
       stopped = true
       window.clearInterval(interval)
     }
-  }, [active, autoCapture, capture, captureMode])
+  }, [active, autoCapture, capture, captureMode, captureProcessing])
 
   const toggleTorch = async () => {
     const track = trackRef.current ?? streamRef.current?.getVideoTracks()[0]

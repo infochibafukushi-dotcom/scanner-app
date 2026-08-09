@@ -14,6 +14,7 @@ export const galleryThumbKey = (page: ScanPage) =>
     page.filter,
     page.clean ? 1 : 0,
     page.bookFlatten ?? 'off',
+    page.bookSpineSide ?? '',
     page.paperSize,
     JSON.stringify(page.corners)
   ].join('|')

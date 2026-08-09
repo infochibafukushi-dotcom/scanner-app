@@ -578,3 +578,6 @@ export const AUTO_CAPTURE_STABLE_DELTA = 0.022
 
 /** Consecutive confident+stable frames required before auto shutter. */
 export const AUTO_CAPTURE_STABLE_FRAMES = 3
+
+/** Mean RGB frame difference below which the view is considered still. */
+export const AUTO_CAPTURE_MOTION_MAX = 6.5
