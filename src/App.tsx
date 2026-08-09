@@ -10,6 +10,7 @@ import {
   invalidateOcrForImageChange,
   normalizeFilter,
   type BookFlattenMode,
+  type CornerDetectionResult,
   type EditTool,
   type FilterMode,
   type HighResTileId,
@@ -18,15 +19,16 @@ import {
   type ViewMode
 } from './types'
 import { detectDocumentCorners } from './utils/corners'
+import { getGalleryPlaceholder, prefetchGalleryThumb, seedGalleryPlaceholder } from './utils/galleryThumbs'
 import { cancelHighResStitch, stitchHighResAdaptive } from './utils/highResWorkerClient'
-import { RENDER_MAX, renderScanPage } from './utils/image'
+import { RENDER_MAX, defaultCorners, renderScanPage } from './utils/image'
 import { collectPageTexts, recognizePage } from './utils/ocr'
 import { splitDataUrlVertically } from './utils/pageSplit'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
 import { sharePagesWithGpt } from './utils/share'
 import { downloadTextFile, downloadWordFile } from './utils/textExport'
 import { buildPagesZipBlob } from './utils/zipExport'
-import { CameraView } from './views/CameraView'
+import { CameraView, type CapturePayload } from './views/CameraView'
 import { EditView } from './views/EditView'
 import { GalleryView } from './views/GalleryView'
 import { OnboardingView } from './views/OnboardingView'
@@ -72,6 +74,26 @@ const makePage = async (dataUrl: string, name: string): Promise<ScanPage> => {
   }
 }
 
+/** Instant page so shutter → stack/gallery never waits on still corner detection. */
+const makePageOptimistic = (dataUrl: string, name: string, live?: CornerDetectionResult | null): ScanPage => {
+  const useLive = Boolean(live?.detected && (live.confidence ?? 0) >= 0.45)
+  return {
+    id: crypto.randomUUID(),
+    name,
+    dataUrl,
+    corners: useLive && live ? live.corners : defaultCorners(),
+    cornerDetection: useLive ? 'auto' : 'fallback',
+    cornerConfidence: useLive && live ? live.confidence : 0,
+    rotation: 0,
+    filter: 'color',
+    clean: false,
+    bookFlatten: 'off',
+    paperSize: 'auto',
+    ocrStatus: 'idle',
+    translationStatus: 'idle'
+  }
+}
+
 const applyOcrUpdates = (pages: ScanPage[], updates: { index: number; text: string }[]) =>
   pages.map((page, index) => {
     const update = updates.find((item) => item.index === index)
@@ -99,6 +121,8 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false)
   const [panelBusy, setPanelBusy] = useState(false)
   const [detectingId, setDetectingId] = useState<string | null>(null)
+  const [quickThumbs, setQuickThumbs] = useState<Record<string, string>>({})
+  const [cameraWarm, setCameraWarm] = useState(true)
   const [fileName, setFileName] = useState(initialFileName())
   const [exportStatus, setExportStatus] = useState('')
   const [pageOcrStatus, setPageOcrStatus] = useState('')
@@ -119,7 +143,9 @@ export default function App() {
       setPages(payload.pages)
       setSelectedPageId(payload.selectedId ?? payload.pages[0]?.id ?? null)
       setFileName(payload.fileName || initialFileName())
-      setViewMode(payload.pages.length ? 'gallery' : 'camera')
+      const nextMode = payload.pages.length ? 'gallery' : 'camera'
+      setViewMode(nextMode)
+      setCameraWarm(nextMode === 'camera')
     },
     []
   )
@@ -138,6 +164,15 @@ export default function App() {
     setShowOnboarding(false)
   }, [hydrated, pages.length, showOnboarding])
 
+  useEffect(() => {
+    if (viewMode === 'camera') setCameraWarm(true)
+  }, [viewMode])
+
+  useEffect(() => {
+    if (viewMode !== 'gallery') return
+    for (const page of pages) prefetchGalleryThumb(page)
+  }, [viewMode, pages])
+
   const selectedPage = useMemo(
     () => pages.find((page) => page.id === selectedPageId) ?? null,
     [pages, selectedPageId]
@@ -148,7 +183,14 @@ export default function App() {
   )
   const replacePage = useMemo(() => pages.find((page) => page.id === replacePageId) ?? null, [pages, replacePageId])
   const anyBusy = isBusy || panelBusy || Boolean(stitchProgress)
-  const latestThumbUrl = pages.length ? pages[pages.length - 1].dataUrl : null
+  const latestPage = pages.length ? pages[pages.length - 1] : null
+  const latestThumbUrl = latestPage
+    ? (quickThumbs[latestPage.id] ?? getGalleryPlaceholder(latestPage.id) ?? null)
+    : null
+
+  const rememberQuickThumb = useCallback((pageId: string, url: string) => {
+    setQuickThumbs((current) => (current[pageId] === url ? current : { ...current, [pageId]: url }))
+  }, [])
 
   useEffect(() => {
     if (!undo) return
@@ -167,21 +209,51 @@ export default function App() {
     setSelectedPageId(page.id)
   }
 
-  const addCapturedPage = async (dataUrl: string) => {
+  const refineCapturedCorners = async (pageId: string, dataUrl: string) => {
+    try {
+      const detection = await detectDocumentCorners(dataUrl)
+      updatePageImage(pageId, (page) => {
+        if (page.cornerDetection === 'manual') return page
+        return {
+          ...page,
+          corners: detection.corners,
+          cornerDetection: detection.detected ? 'auto' : 'fallback',
+          cornerConfidence: detection.confidence
+        }
+      })
+      const refined = pagesRef.current.find((page) => page.id === pageId)
+      if (refined && refined.cornerDetection !== 'manual') {
+        prefetchGalleryThumb({
+          ...refined,
+          corners: detection.corners,
+          cornerDetection: detection.detected ? 'auto' : 'fallback',
+          cornerConfidence: detection.confidence
+        })
+      }
+    } catch (error) {
+      console.warn('Background corner refine failed.', error)
+    }
+  }
+
+  const addCapturedPage = async (payload: CapturePayload | string) => {
+    const dataUrl = typeof payload === 'string' ? payload : payload.dataUrl
+    const liveDetection = typeof payload === 'string' ? null : payload.liveDetection
     if (replacePageId) {
       setPendingReplaceUrl(dataUrl)
       setViewMode('gallery')
       return
     }
-    setIsBusy(true)
-    try {
-      const page = await makePage(dataUrl, `撮影-${pagesRef.current.length + 1}`)
-      appendPage(page)
-      // Stay on camera for continuous capture.
-      setViewMode('camera')
-    } finally {
-      setIsBusy(false)
-    }
+
+    const page = makePageOptimistic(dataUrl, `撮影-${pagesRef.current.length + 1}`, liveDetection)
+    appendPage(page)
+    setViewMode('camera')
+
+    // Seed a lightweight stack thumb while corrected gallery thumbs generate.
+    void seedGalleryPlaceholder(page.id, dataUrl).then((url) => {
+      if (url) rememberQuickThumb(page.id, url)
+    })
+    prefetchGalleryThumb(page)
+    void refineCapturedCorners(page.id, dataUrl)
   }
 
   const finishCamera = () => {
@@ -266,6 +338,12 @@ export default function App() {
       return next
     })
     setUndo({ page: removed, index, message: `${index + 1}ページ目を削除しました` })
+    setQuickThumbs((current) => {
+      if (!(pageId in current)) return current
+      const next = { ...current }
+      delete next[pageId]
+      return next
+    })
   }
 
   const undoDelete = () => {
@@ -613,8 +691,10 @@ export default function App() {
     await startNewDocument()
     setPages([])
     setSelectedPageId(null)
+    setQuickThumbs({})
     setFileName(initialFileName())
     setViewMode('camera')
+    setCameraWarm(true)
     setUndo(null)
     setSaveSheetOpen(false)
     setTextSheetOpen(false)
@@ -661,13 +741,13 @@ export default function App() {
 
   return (
     <div className={`app-shell redesign-shell mode-${viewMode}`}>
-      {viewMode === 'camera' && (
+      {hydrated && cameraWarm && (
         <CameraView
-          active
+          active={viewMode === 'camera'}
           pageCount={pages.length}
           latestThumbUrl={latestThumbUrl}
           mode={replacePageId ? 'replace' : 'append'}
-          onCapture={(dataUrl) => void addCapturedPage(dataUrl)}
+          onCapture={(payload) => void addCapturedPage(payload)}
           onClose={finishCamera}
           onOpenGallery={() => setViewMode('gallery')}
           onDone={finishCamera}

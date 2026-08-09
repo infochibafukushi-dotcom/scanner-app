@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ScanPage } from '../types'
-import { getGalleryThumbUrl } from '../utils/galleryThumbs'
+import {
+  getGalleryPlaceholder,
+  getGalleryThumbUrl,
+  subscribeGalleryPlaceholder
+} from '../utils/galleryThumbs'
 
 type Props = {
   page: ScanPage
@@ -13,6 +17,7 @@ type Props = {
 
 export function PageCard({ page, index, onOpen, onMenu }: Props) {
   const [thumb, setThumb] = useState<string | null>(null)
+  const [placeholder, setPlaceholder] = useState<string | null>(() => getGalleryPlaceholder(page.id))
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: page.id })
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -21,7 +26,15 @@ export function PageCard({ page, index, onOpen, onMenu }: Props) {
   }
 
   useEffect(() => {
+    setPlaceholder(getGalleryPlaceholder(page.id))
+    return subscribeGalleryPlaceholder(page.id, () => {
+      setPlaceholder(getGalleryPlaceholder(page.id))
+    })
+  }, [page.id])
+
+  useEffect(() => {
     let cancelled = false
+    setThumb(null)
     void getGalleryThumbUrl(page).then((url) => {
       if (!cancelled) setThumb(url)
     })
@@ -29,6 +42,8 @@ export function PageCard({ page, index, onOpen, onMenu }: Props) {
       cancelled = true
     }
   }, [page])
+
+  const preview = thumb ?? placeholder
 
   return (
     <article
@@ -49,7 +64,15 @@ export function PageCard({ page, index, onOpen, onMenu }: Props) {
         </button>
       </div>
       <button type="button" className="gallery-card-image" onClick={onOpen}>
-        {thumb ? <img src={thumb} alt={`${index + 1}ページ`} /> : <span className="thumb-loading">…</span>}
+        {preview ? (
+          <img
+            src={preview}
+            alt={`${index + 1}ページ`}
+            className={thumb ? undefined : 'gallery-card-placeholder'}
+          />
+        ) : (
+          <span className="thumb-loading">…</span>
+        )}
       </button>
       <button type="button" className="gallery-menu-btn" onClick={onMenu} aria-label={`${index + 1}ページのメニュー`}>
         ⋯

@@ -6,7 +6,7 @@ import { applyAspectToSize, resolveTargetAspect } from './paper'
 export const RENDER_MAX = {
   preview: 1800,
   editor: 2400,
-  gallery: 800,
+  gallery: 640,
   ocr: 2400,
   export: 3400,
   highRes: 4000
@@ -35,6 +35,20 @@ export const loadImage = (src: string) =>
     image.onerror = reject
     image.src = src
   })
+
+/** Fast JPEG downscale for camera/gallery placeholders (no warp). */
+export const downscaleDataUrl = async (dataUrl: string, maxSide = 280, quality = 0.72) => {
+  const image = await loadImage(dataUrl)
+  const scale = Math.min(1, maxSide / Math.max(image.width, image.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(image.width * scale))
+  canvas.height = Math.max(1, Math.round(image.height * scale))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return dataUrl
+  enableHighQuality(ctx)
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return canvas.toDataURL('image/jpeg', quality)
+}
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 const grayscale = (r: number, g: number, b: number) => Math.round(r * 0.299 + g * 0.587 + b * 0.114)
@@ -492,13 +506,16 @@ export const renderScanPage = async (
   maxSide: number = RENDER_MAX.preview
 ): Promise<HTMLCanvasElement> => {
   const sourceImage = await loadImage(page.dataUrl)
+  // Keep getImageData cost proportional to output size (gallery/preview), not full capture res.
+  const sourceBudget = Math.max(maxSide * 1.7, maxSide + 160)
+  const sourceScale = Math.min(1, sourceBudget / Math.max(sourceImage.width, sourceImage.height))
   const sourceCanvas = document.createElement('canvas')
-  sourceCanvas.width = sourceImage.width
-  sourceCanvas.height = sourceImage.height
+  sourceCanvas.width = Math.max(1, Math.round(sourceImage.width * sourceScale))
+  sourceCanvas.height = Math.max(1, Math.round(sourceImage.height * sourceScale))
   const sourceCtx = sourceCanvas.getContext('2d')
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
   enableHighQuality(sourceCtx)
-  sourceCtx.drawImage(sourceImage, 0, 0)
+  sourceCtx.drawImage(sourceImage, 0, 0, sourceCanvas.width, sourceCanvas.height)
 
   const correctedCanvas = warpPerspective(
     sourceCanvas,

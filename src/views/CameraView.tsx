@@ -1,5 +1,5 @@
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react'
-import type { Point } from '../types'
+import type { CornerDetectionResult, Point } from '../types'
 import { captureStillDataUrl, openRearCamera } from '../utils/cameraCapture'
 import {
   AUTO_CAPTURE_CONFIDENCE,
@@ -14,12 +14,17 @@ import {
 } from '../utils/liveCorners'
 import '../highres.css'
 
+export type CapturePayload = {
+  dataUrl: string
+  liveDetection?: CornerDetectionResult | null
+}
+
 type Props = {
   active: boolean
   pageCount: number
   latestThumbUrl?: string | null
   mode?: 'append' | 'replace'
-  onCapture: (dataUrl: string) => void
+  onCapture: (payload: CapturePayload) => void
   onClose: () => void
   onOpenGallery: () => void
   onDone: () => void
@@ -47,6 +52,7 @@ export function CameraView({
   const streamRef = useRef<MediaStream | null>(null)
   const trackRef = useRef<MediaStreamTrack | null>(null)
   const lastCornersRef = useRef<Point[] | null>(null)
+  const lastDetectionRef = useRef<CornerDetectionResult | null>(null)
   const displayCornersRef = useRef<[Point, Point, Point, Point] | null>(null)
   const stableFramesRef = useRef(0)
   const previousFrameRef = useRef<ImageData | null>(null)
@@ -62,18 +68,11 @@ export function CameraView({
   const [holdMessage, setHoldMessage] = useState('')
   const [flash, setFlash] = useState(false)
 
-  useEffect(() => {
-    if (!active) return
-    setAutoCapture(false)
-    autoArmedRef.current = true
-    missingSinceRef.current = null
-    lockedCornersRef.current = null
-    stableFramesRef.current = 0
-    lastCornersRef.current = null
-    displayCornersRef.current = null
-    setHoldMessage('')
-    setCorners(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
 
+  // Keep MediaStream across gallery visits; stop only on unmount.
+  useEffect(() => {
     let cancelled = false
     const startCamera = async () => {
       try {
@@ -87,9 +86,12 @@ export function CameraView({
         trackRef.current = track ?? null
         setTorchSupported(hasTorch)
         setTorchOn(false)
+        stream.getVideoTracks().forEach((mediaTrack) => {
+          mediaTrack.enabled = activeRef.current
+        })
         if (videoRef.current) {
           videoRef.current.srcObject = stream
-          await videoRef.current.play()
+          if (activeRef.current) await videoRef.current.play()
         }
       } catch (cameraError) {
         console.error(cameraError)
@@ -104,6 +106,35 @@ export function CameraView({
       streamRef.current = null
       trackRef.current = null
     }
+  }, [])
+
+  useEffect(() => {
+    const stream = streamRef.current
+    if (!stream) return
+    stream.getVideoTracks().forEach((track) => {
+      track.enabled = active
+    })
+    const video = videoRef.current
+    if (!active) {
+      video?.pause()
+      return
+    }
+    if (video && video.srcObject !== stream) video.srcObject = stream
+    void video?.play().catch(() => undefined)
+  }, [active])
+
+  useEffect(() => {
+    if (!active) return
+    setAutoCapture(false)
+    autoArmedRef.current = true
+    missingSinceRef.current = null
+    lockedCornersRef.current = null
+    stableFramesRef.current = 0
+    lastCornersRef.current = null
+    lastDetectionRef.current = null
+    displayCornersRef.current = null
+    setHoldMessage('')
+    setCorners(null)
   }, [active])
 
   const capture = useCallback(async () => {
@@ -112,9 +143,9 @@ export function CameraView({
     capturingRef.current = true
     try {
       const dataUrl = await captureStillDataUrl(trackRef.current, video, 'normal')
-      onCapture(dataUrl)
+      onCapture({ dataUrl, liveDetection: lastDetectionRef.current })
       setFlash(true)
-      window.setTimeout(() => setFlash(false), 120)
+      window.setTimeout(() => setFlash(false), 100)
       if (autoCapture) {
         autoArmedRef.current = false
         lockedCornersRef.current = lastCornersRef.current
@@ -127,7 +158,7 @@ export function CameraView({
     } finally {
       window.setTimeout(() => {
         capturingRef.current = false
-      }, 400)
+      }, 220)
     }
   }, [autoCapture, onCapture])
 
@@ -148,6 +179,7 @@ export function CameraView({
       if (!result?.detected) {
         setCorners(null)
         lastCornersRef.current = null
+        lastDetectionRef.current = null
         displayCornersRef.current = null
         stableFramesRef.current = 0
         if (!autoCapture) return
@@ -163,6 +195,7 @@ export function CameraView({
         return
       }
 
+      lastDetectionRef.current = result
       const smoothed = smoothCorners(displayCornersRef.current, result.corners)
       displayCornersRef.current = smoothed
       setCorners(smoothed)
@@ -223,8 +256,6 @@ export function CameraView({
     }
   }, [active, autoCapture, capture])
 
-  if (!active) return null
-
   const toggleTorch = async () => {
     const track = trackRef.current ?? streamRef.current?.getVideoTracks()[0]
     if (!track) return
@@ -238,7 +269,14 @@ export function CameraView({
   }
 
   return (
-    <div className="camera-view-screen" role="dialog" aria-modal="true" aria-label="撮影">
+    <div
+      className={`camera-view-screen ${active ? 'is-active' : 'is-idle'}`}
+      role="dialog"
+      aria-modal={active}
+      aria-label="撮影"
+      aria-hidden={!active}
+      hidden={!active}
+    >
       <header className="camera-view-header">
         <button type="button" className="icon-btn" onClick={onClose} aria-label="閉じる">
           ×
