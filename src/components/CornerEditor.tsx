@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { CornerDetectionMode, FilterMode, Point } from '../types'
 import { RENDER_MAX, renderEditorImage } from '../utils/image'
 import '../gesture.css'
@@ -35,20 +36,7 @@ const loupeSizeForViewport = () => {
   return width >= 900 ? 140 : width >= 700 ? 132 : 118
 }
 
-const viewportBounds = () => {
-  const visual = window.visualViewport
-  if (visual) {
-    return {
-      left: visual.offsetLeft,
-      top: visual.offsetTop,
-      width: visual.width,
-      height: visual.height
-    }
-  }
-  return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
-}
-
-/** Place the loupe near the finger without covering it, flipping at screen edges. */
+/** Place the loupe near the finger using client coordinates (viewport space). */
 const placeLoupe = (
   clientX: number,
   clientY: number,
@@ -56,23 +44,20 @@ const placeLoupe = (
   preferRight: boolean,
   point: Point
 ): Loupe => {
-  const gap = 28
+  const gap = 20
   const margin = 8
-  const bounds = viewportBounds()
-  const rightX = clientX + gap
-  const leftX = clientX - size - gap
-  const aboveY = clientY - size - gap
-  const belowY = clientY + gap
+  // Use visualViewport only for available size — never add offsetLeft/offsetTop to client coords.
+  const viewportWidth = window.visualViewport?.width ?? window.innerWidth
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight
 
-  let x = preferRight ? rightX : leftX
-  if (preferRight && x + size > bounds.left + bounds.width - margin) x = leftX
-  if (!preferRight && x < bounds.left + margin) x = rightX
-  x = clamp(x, bounds.left + margin, bounds.left + bounds.width - size - margin)
+  let x = preferRight ? clientX + gap : clientX - size - gap
+  if (x + size > viewportWidth - margin) x = clientX - size - gap
+  if (x < margin) x = clientX + gap
+  x = clamp(x, margin, viewportWidth - size - margin)
 
-  let y = aboveY
-  if (y < bounds.top + margin) y = belowY
-  if (y + size > bounds.top + bounds.height - margin) y = aboveY
-  y = clamp(y, bounds.top + margin, bounds.top + bounds.height - size - margin)
+  let y = clientY - size - gap
+  if (y < margin) y = clientY + gap
+  y = clamp(y, margin, viewportHeight - size - margin)
 
   return { x, y, size, point }
 }
@@ -378,16 +363,18 @@ export function CornerEditor({
         {filtering && <div className="editor-processing">画像モード反映中…</div>}
       </div>
 
-      {loupe && (
-        <div
-          className="corner-loupe"
-          style={{ left: loupe.x, top: loupe.y, width: loupe.size, height: loupe.size }}
-          aria-hidden="true"
-        >
-          <canvas ref={loupeCanvasRef} className="corner-loupe-canvas" />
-          <span className="corner-loupe-crosshair" />
-        </div>
-      )}
+      {loupe &&
+        createPortal(
+          <div
+            className="corner-loupe"
+            style={{ left: loupe.x, top: loupe.y, width: loupe.size, height: loupe.size }}
+            aria-hidden="true"
+          >
+            <canvas ref={loupeCanvasRef} className="corner-loupe-canvas" />
+            <span className="corner-loupe-crosshair" />
+          </div>,
+          document.body
+        )}
     </div>
   )
 }
