@@ -1,6 +1,6 @@
 import type { FilterMode, Point, ScanPage } from '../types'
+import { applyBookFlattenMode, normalizeBookFlatten } from './bookDewarp'
 import { applyAspectToSize, resolveTargetAspect } from './paper'
-import { applyBookDewarp } from './bookDewarp'
 
 /** Purpose-specific max side lengths to balance quality and mobile memory. */
 export const RENDER_MAX = {
@@ -245,13 +245,6 @@ const applyMildUnsharp = (ctx: CanvasRenderingContext2D, width: number, height: 
 
   ctx.putImageData(imageData, 0, 0)
 }
-
-/**
- * @deprecated Internal alias — prefer applyBookDewarp from bookDewarp.ts
- * Kept as a thin wrapper so renderScanPage stays readable.
- */
-const applyBookFlatten = (source: HTMLCanvasElement, strength = 0.38): HTMLCanvasElement =>
-  applyBookDewarp(source, strength)
 
 const applyAutoEnhance = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
   const imageData = ctx.getImageData(0, 0, width, height)
@@ -514,8 +507,9 @@ export const renderScanPage = async (
     page.paperSize ?? (page as { paperRatio?: ScanPage['paperSize'] }).paperRatio ?? 'auto'
   )
   let working = correctedCanvas
-  if (page.flattenBook) {
-    working = applyBookFlatten(correctedCanvas, 0.4)
+  const bookMode = normalizeBookFlatten(page.bookFlatten ?? page.flattenBook)
+  if (bookMode !== 'off') {
+    working = applyBookFlattenMode(correctedCanvas, bookMode)
   }
   const correctedCtx = working.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')

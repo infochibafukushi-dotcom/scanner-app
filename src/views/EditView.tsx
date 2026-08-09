@@ -3,7 +3,7 @@ import { CornerEditor } from '../components/CornerEditor'
 import { CorrectedPreview } from '../components/CorrectedPreview'
 import { EditToolbar } from '../components/EditToolbar'
 import { FilterToolbar } from '../components/FilterToolbar'
-import { normalizeFilter, type EditTool, type FilterMode, type PaperSize, type ScanPage } from '../types'
+import { normalizeFilter, type BookFlattenMode, type EditTool, type FilterMode, type PaperSize, type ScanPage } from '../types'
 import { PAPER_OPTIONS, paperSizeLabel } from '../utils/paper'
 
 type Props = {
@@ -20,7 +20,7 @@ type Props = {
   onPaperSize: (size: PaperSize) => void
   onFilter: (filter: FilterMode) => void
   onToggleClean: () => void
-  onToggleFlattenBook: () => void
+  onBookFlatten: (mode: BookFlattenMode) => void
   onRotate: (delta: number) => void
   onSplitPage: () => void
   onOpenTextRecognition: () => void
@@ -40,7 +40,7 @@ export function EditView({
   onPaperSize,
   onFilter,
   onToggleClean,
-  onToggleFlattenBook,
+  onBookFlatten,
   onRotate,
   onSplitPage,
   onOpenTextRecognition
@@ -133,10 +133,10 @@ export function EditView({
           <FilterToolbar
             filter={pageFilter}
             clean={page.clean}
-            flattenBook={page.flattenBook}
+            bookFlatten={page.bookFlatten}
             onFilter={onFilter}
             onToggleClean={onToggleClean}
-            onToggleFlattenBook={onToggleFlattenBook}
+            onBookFlatten={onBookFlatten}
           />
         )}
 

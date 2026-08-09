@@ -449,6 +449,21 @@
   color: #94a3b8;
 }
 
+.book-flatten-row {
+  display: grid;
+  gap: 6px;
+}
+
+.book-flatten-label {
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  padding: 0 2px;
+}
+
+.book-flatten-chips {
+  padding-bottom: 0;
+}
+
 .corrected-preview.compact {
   position: relative;
   display: grid;

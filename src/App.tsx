@@ -9,6 +9,7 @@ import { useDocumentStorage } from './hooks/useDocumentStorage'
 import {
   invalidateOcrForImageChange,
   normalizeFilter,
+  type BookFlattenMode,
   type EditTool,
   type FilterMode,
   type HighResTileId,
@@ -64,7 +65,7 @@ const makePage = async (dataUrl: string, name: string): Promise<ScanPage> => {
     rotation: 0,
     filter: 'color',
     clean: false,
-    flattenBook: false,
+    bookFlatten: 'off',
     paperSize: 'auto',
     ocrStatus: 'idle',
     translationStatus: 'idle'
@@ -720,8 +721,8 @@ export default function App() {
             updatePageImage(selectedPage.id, (page) => ({ ...page, filter: normalizeFilter(filter) }))
           }
           onToggleClean={() => updatePageImage(selectedPage.id, (page) => ({ ...page, clean: !page.clean }))}
-          onToggleFlattenBook={() =>
-            updatePageImage(selectedPage.id, (page) => ({ ...page, flattenBook: !page.flattenBook }))
+          onBookFlatten={(mode: BookFlattenMode) =>
+            updatePageImage(selectedPage.id, (page) => ({ ...page, bookFlatten: mode }))
           }
           onRotate={(delta) => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + delta }))}
           onSplitPage={() => void splitPage(selectedPage.id)}

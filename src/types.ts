@@ -1,5 +1,8 @@
 export type FilterMode = 'auto' | 'color' | 'gray' | 'bw'
 
+/** Book page curl correction: off | lightweight | cylindrical 3D. */
+export type BookFlattenMode = 'off' | 'simple' | 'precise'
+
 /** UI exposes auto/color/gray only; legacy `bw` maps to gray. */
 export const normalizeFilter = (filter: unknown): FilterMode => {
   if (filter === 'bw') return 'gray'
@@ -54,8 +57,16 @@ export type ScanPage = {
   filter: FilterMode
   /** Speckle / handwriting cleanup + stronger sharpen (vFlat Clean寄せ). */
   clean: boolean
-  /** 3D cylindrical book dewarp after perspective warp (geometric, no OpenCV). */
-  flattenBook: boolean
+  /**
+   * Book curl correction.
+   * - off: no curl correction (default for normal documents)
+   * - simple: legacy lightweight horizontal expansion
+   * - precise: cylindrical 3D + text-line straighten (falls back to simple when confidence is low)
+   * Legacy boolean `flattenBook` is migrated via normalizeBookFlatten.
+   */
+  bookFlatten: BookFlattenMode
+  /** @deprecated Migrated into bookFlatten. */
+  flattenBook?: boolean
   paperSize: PaperSize
   /** @deprecated Migrated into paperSize on load. */
   paperRatio?: PaperRatio
