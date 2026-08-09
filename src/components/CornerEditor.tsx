@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CornerDetectionMode, FilterMode, Point } from '../types'
+import {
+  getContainedImageRect,
+  loupeSizeForWidth,
+  placeLoupeForCorner,
+  screenPointToNormalized,
+  type DisplayRect
+} from '../utils/displayRect'
 import { RENDER_MAX, renderEditorImage } from '../utils/image'
 import '../gesture.css'
 
@@ -35,40 +42,7 @@ const pointerDistance = (first: PointerEvent, second: PointerEvent) =>
 const needsCornerHint = (mode: CornerDetectionMode, confidence?: number) =>
   mode === 'fallback' || (mode === 'auto' && typeof confidence === 'number' && confidence < 0.62)
 
-const loupeSizeForViewport = () => {
-  const width = window.visualViewport?.width ?? window.innerWidth
-  return width >= 900 ? 140 : width >= 700 ? 132 : 118
-}
-
-/** Place the loupe near the finger using client coordinates (viewport space). */
-const placeLoupe = (
-  clientX: number,
-  clientY: number,
-  size: number,
-  preferRight: boolean,
-  point: Point
-): Loupe => {
-  const gap = 20
-  const margin = 8
-  // Use visualViewport only for available size — never add offsetLeft/offsetTop to client coords.
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight
-
-  // Keep clear of edit header / bottom toolbar while staying near the finger.
-  const topSafe = 56
-  const bottomSafe = 88
-  let x = preferRight ? clientX + gap : clientX - size - gap
-  if (x + size > viewportWidth - margin) x = clientX - size - gap
-  if (x < margin) x = clientX + gap
-  x = clamp(x, margin, viewportWidth - size - margin)
-
-  let y = clientY - size - gap
-  if (y < topSafe) y = clientY + gap
-  const maxY = Math.max(topSafe, viewportHeight - size - bottomSafe)
-  y = clamp(y, topSafe, maxY)
-
-  return { x, y, size, point }
-}
+const emptyRect = (): DisplayRect => ({ left: 0, top: 0, width: 0, height: 0 })
 
 export function CornerEditor({
   imageUrl,
@@ -90,12 +64,24 @@ export function CornerEditor({
   const panRef = useRef<{ pointerId: number; clientX: number; clientY: number; view: Viewport } | null>(null)
   const pinchRef = useRef<{ distance: number; centerX: number; centerY: number; view: Viewport } | null>(null)
   const activeIndexRef = useRef<number | null>(null)
+  const displayRectRef = useRef<DisplayRect>(emptyRect())
   const [ratio, setRatio] = useState(1)
+  const [imageSize, setImageSize] = useState({ width: 1, height: 1 })
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const [previewUrl, setPreviewUrl] = useState(imageUrl)
   const [filtering, setFiltering] = useState(false)
   const [viewport, setViewport] = useState<Viewport>({ scale: 1, x: 0, y: 0 })
   const viewportRef = useRef(viewport)
   const [loupe, setLoupe] = useState<Loupe | null>(null)
+
+  const displayRect = useMemo(
+    () => getContainedImageRect(containerSize.width, containerSize.height, imageSize.width, imageSize.height),
+    [containerSize.height, containerSize.width, imageSize.height, imageSize.width]
+  )
+
+  useEffect(() => {
+    displayRectRef.current = displayRect
+  }, [displayRect])
 
   useEffect(() => {
     viewportRef.current = viewport
@@ -103,10 +89,31 @@ export function CornerEditor({
 
   useEffect(() => {
     const image = new Image()
-    image.onload = () => setRatio(image.width / image.height || 1)
+    image.onload = () => {
+      const width = Math.max(1, image.naturalWidth || image.width)
+      const height = Math.max(1, image.naturalHeight || image.height)
+      setImageSize({ width, height })
+      setRatio(width / height || 1)
+    }
     image.src = imageUrl
     setViewport({ scale: 1, x: 0, y: 0 })
   }, [imageUrl])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || typeof ResizeObserver === 'undefined') return
+    const sync = () => {
+      const rect = container.getBoundingClientRect()
+      setContainerSize({
+        width: Math.max(0, rect.width),
+        height: Math.max(0, rect.height)
+      })
+    }
+    sync()
+    const observer = new ResizeObserver(sync)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [previewUrl, compact])
 
   useEffect(() => {
     let cancelled = false
@@ -194,17 +201,14 @@ export function CornerEditor({
       // ignore
     }
 
-    const container = containerRef.current
-    const rect = container?.getBoundingClientRect()
     const view = viewportRef.current
-    // Compact layout can briefly report 0×0; never let that inflate srcCrop.
-    const displayWidth = Math.max(48, (rect?.width && rect.width > 1 ? rect.width : source.width) * Math.max(0.01, view.scale))
-    const idealCrop = (size / LOUPE_ZOOM) * (source.width / displayWidth)
+    const frame = displayRectRef.current
+    const paintedWidth = Math.max(48, (frame.width > 1 ? frame.width : source.width) * Math.max(0.01, view.scale))
+    const idealCrop = (size / LOUPE_ZOOM) * (source.width / paintedWidth)
     const srcCrop = clamp(idealCrop, 12, Math.min(source.width, source.height))
     const cx = clamp(point.x, 0, 1) * source.width
     const cy = clamp(point.y, 0, 1) * source.height
 
-    // Keep source rect fully inside the canvas — out-of-bounds drawImage throws IndexSizeError.
     let sx = cx - srcCrop / 2
     let sy = cy - srcCrop / 2
     let sw = srcCrop
@@ -233,7 +237,6 @@ export function CornerEditor({
 
   useEffect(() => {
     if (!loupe) return
-    // Portal canvas mounts after commit; paint on the next frame if ref is still null.
     paintLoupe(loupe.point, loupe.size)
     if (!loupeCanvasRef.current) {
       const id = window.requestAnimationFrame(() => paintLoupe(loupe.point, loupe.size))
@@ -241,29 +244,33 @@ export function CornerEditor({
     }
   }, [loupe])
 
-  const updateLoupe = (clientX: number, clientY: number, point: Point, cornerIndex: number) => {
-    const size = loupeSizeForViewport()
-    const preferRight = cornerIndex === 0 || cornerIndex === 3
-    setLoupe(placeLoupe(clientX, clientY, size, preferRight, point))
+  const updateLoupe = (clientX: number, clientY: number, point: Point) => {
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+    const size = loupeSizeForWidth(viewportWidth)
+    const placed = placeLoupeForCorner(clientX, clientY, size, point, viewportWidth, viewportHeight)
+    setLoupe({ ...placed, size, point })
   }
 
   const updateCorner = (index: number, clientX: number, clientY: number) => {
     const container = containerRef.current
     if (!container) return
     const rect = container.getBoundingClientRect()
-    const view = viewportRef.current
-    const width = Math.max(1, rect.width * Math.max(0.01, view.scale))
-    const height = Math.max(1, rect.height * Math.max(0.01, view.scale))
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return
-    const point = {
-      x: clamp((clientX - rect.left - view.x) / width, 0, 1),
-      y: clamp((clientY - rect.top - view.y) / height, 0, 1)
-    }
+    const frame = displayRectRef.current
+    if (frame.width < 1 || frame.height < 1) return
+    const point = screenPointToNormalized(
+      clientX,
+      clientY,
+      rect.left,
+      rect.top,
+      frame,
+      viewportRef.current
+    )
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return
     const next = [...corners] as [Point, Point, Point, Point]
     next[index] = point
     onChange(next)
-    updateLoupe(clientX, clientY, point, index)
+    updateLoupe(clientX, clientY, point)
   }
 
   const onViewportPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -321,7 +328,13 @@ export function CornerEditor({
     [corners]
   )
 
+  const svgPoints = useMemo(
+    () => corners.map((point) => `${point.x},${point.y}`).join(' '),
+    [corners]
+  )
+
   const showHint = needsCornerHint(detectionMode, confidence)
+  const frameReady = displayRect.width > 1 && displayRect.height > 1
 
   return (
     <div className={compact ? 'editor-panel compact-crop' : 'editor-panel'}>
@@ -355,47 +368,60 @@ export function CornerEditor({
           style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}
         >
           <img src={previewUrl} alt="調整対象" className="editor-image" draggable={false} />
-          <div className="editor-overlay" style={{ clipPath: `polygon(${polygonPoints})` }} />
-          <svg className="editor-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-            <polygon
-              points={corners.map((point) => `${point.x * 100},${point.y * 100}`).join(' ')}
-              fill="rgba(14,165,233,0.15)"
-              stroke="#0ea5e9"
-              strokeWidth="1"
-            />
-          </svg>
-          {corners.map((point, index) => (
-            <button
-              key={labels[index]}
-              type="button"
-              className="corner-handle"
-              style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
-              onPointerDown={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                event.currentTarget.setPointerCapture(event.pointerId)
-                activeIndexRef.current = index
-                updateCorner(index, event.clientX, event.clientY)
+          {frameReady && (
+            <div
+              className="editor-image-frame"
+              style={{
+                left: displayRect.left,
+                top: displayRect.top,
+                width: displayRect.width,
+                height: displayRect.height
               }}
-              onPointerMove={(event) => {
-                if (activeIndexRef.current === index) updateCorner(index, event.clientX, event.clientY)
-              }}
-              onPointerUp={() => {
-                if (activeIndexRef.current === index) {
-                  activeIndexRef.current = null
-                  setLoupe(null)
-                }
-              }}
-              onPointerCancel={() => {
-                activeIndexRef.current = null
-                setLoupe(null)
-              }}
-              aria-label={labels[index]}
-              title={labels[index]}
             >
-              <span />
-            </button>
-          ))}
+              <div className="editor-overlay" style={{ clipPath: `polygon(${polygonPoints})` }} />
+              <svg className="editor-svg" viewBox="0 0 1 1" preserveAspectRatio="none">
+                <polygon
+                  points={svgPoints}
+                  fill="rgba(14,165,233,0.15)"
+                  stroke="#0ea5e9"
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+              {corners.map((point, index) => (
+                <button
+                  key={labels[index]}
+                  type="button"
+                  className="corner-handle"
+                  style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+                  onPointerDown={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    event.currentTarget.setPointerCapture(event.pointerId)
+                    activeIndexRef.current = index
+                    updateCorner(index, event.clientX, event.clientY)
+                  }}
+                  onPointerMove={(event) => {
+                    if (activeIndexRef.current === index) updateCorner(index, event.clientX, event.clientY)
+                  }}
+                  onPointerUp={() => {
+                    if (activeIndexRef.current === index) {
+                      activeIndexRef.current = null
+                      setLoupe(null)
+                    }
+                  }}
+                  onPointerCancel={() => {
+                    activeIndexRef.current = null
+                    setLoupe(null)
+                  }}
+                  aria-label={labels[index]}
+                  title={labels[index]}
+                >
+                  <span />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {filtering && <div className="editor-processing">画像モード反映中…</div>}
       </div>

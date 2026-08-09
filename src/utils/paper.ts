@@ -219,6 +219,23 @@ export const paperSizeLabel = (paperSize: PaperSize, corners?: [Point, Point, Po
   return PAPER_DEFINITIONS[paperSize]?.label ?? paperSize
 }
 
+/** Short label for the crop toolbar paper button (no auto-guess suffix). */
+export const paperButtonLabel = (paperSize: PaperSize) => {
+  if (paperSize === 'auto') return '自動'
+  if (paperSize === 'free') return '自由'
+  return PAPER_DEFINITIONS[paperSize]?.label ?? paperSize
+}
+
+/** Compact auto-detection hint shown beside the paper button, e.g. "Letter". */
+export const paperAutoDetectionHint = (corners: [Point, Point, Point, Point]) => {
+  const guess = guessAutoPaper(corners)
+  if (guess.kind === 'a-series') return 'A判'
+  if (guess.kind === 'letter') return 'Letter'
+  if (guess.kind === 'business-card') return '名刺'
+  if (guess.label === '自動（自由）') return '自由'
+  return null
+}
+
 export const PAPER_OPTIONS: { key: PaperSize; label: string }[] = [
   { key: 'auto', label: '自動' },
   { key: 'a3', label: 'A3' },

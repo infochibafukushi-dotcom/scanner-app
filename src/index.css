@@ -67,6 +67,10 @@ img { display: block; max-width: 100%; }
 .editor-stage { min-width: 100%; transform-origin: top left; }
 .editor-image,.editor-svg,.editor-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 .editor-image { object-fit: contain; }
+.editor-image-frame { position: absolute; overflow: visible; pointer-events: none; }
+.editor-image-frame .editor-overlay,
+.editor-image-frame .editor-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.editor-image-frame .corner-handle { pointer-events: auto; }
 .editor-overlay { background: rgba(14,165,233,.16); }
 .editor-svg { pointer-events: none; }
 .corner-handle { position: absolute; width: 28px; height: 28px; border: none; border-radius: 999px; background: transparent; transform: translate(-50%,-50%); touch-action: none; }
@@ -309,6 +313,14 @@ body { background: #0a0f18; }
 .editor-viewport-content .editor-svg,
 .editor-viewport-content .editor-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 .editor-viewport-content .editor-image { user-select: none; -webkit-user-drag: none; }
+.editor-viewport-content .editor-image-frame {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+.editor-viewport-content .editor-image-frame .corner-handle {
+  pointer-events: auto;
+}
 .corner-loupe { position: fixed; z-index: 1000; overflow: hidden; border: 3px solid #e0f2fe; border-radius: 12px; box-shadow: 0 12px 28px rgba(0,0,0,.42); background-color: #0f172a; background-repeat: no-repeat; pointer-events: none; }
 .corner-loupe::before, .corner-loupe::after { content: ''; position: absolute; left: 50%; top: 50%; background: rgba(14,165,233,.95); transform: translate(-50%,-50%); box-shadow: 0 0 0 1px rgba(255,255,255,.8); }
 .corner-loupe::before { width: 100%; height: 1px; }

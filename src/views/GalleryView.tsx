@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react'
 import { BottomSheet } from '../components/BottomSheet'
 import { PageCard } from '../components/PageCard'
 import type { ScanPage } from '../types'
+import { getGalleryLayout } from '../utils/galleryLayout'
 import { pruneGalleryThumbs } from '../utils/galleryThumbs'
 
 type Props = {
@@ -65,9 +66,10 @@ export function GalleryView({
   }
 
   const menuIndex = menuPageId ? pages.findIndex((page) => page.id === menuPageId) : -1
+  const layout = getGalleryLayout(pages.length)
 
   return (
-    <div className="gallery-view">
+    <div className={`gallery-view layout-${layout}`}>
       <header className="gallery-header">
         <button type="button" className="text-button" onClick={onBackToCamera}>
           ← 撮影
@@ -94,12 +96,13 @@ export function GalleryView({
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={pages.map((page) => page.id)} strategy={rectSortingStrategy}>
-              <div className="gallery-grid">
+              <div className={`gallery-grid ${layout === 'single' ? 'gallery-single-page' : ''}`}>
                 {pages.map((page, index) => (
                   <PageCard
                     key={page.id}
                     page={page}
                     index={index}
+                    layout={layout}
                     onOpen={() => onOpenPage(page.id)}
                     onMenu={() => setMenuPageId(page.id)}
                   />

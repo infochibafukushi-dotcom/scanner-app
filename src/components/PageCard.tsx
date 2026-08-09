@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ScanPage } from '../types'
+import type { GalleryLayoutMode } from '../utils/galleryLayout'
 import {
   galleryThumbKey,
   getGalleryPlaceholder,
@@ -12,11 +13,12 @@ import {
 type Props = {
   page: ScanPage
   index: number
+  layout?: GalleryLayoutMode
   onOpen: () => void
   onMenu: () => void
 }
 
-export function PageCard({ page, index, onOpen, onMenu }: Props) {
+export function PageCard({ page, index, layout = 'grid', onOpen, onMenu }: Props) {
   const thumbKey = galleryThumbKey(page)
   const [thumb, setThumb] = useState<string | null>(null)
   const [placeholder, setPlaceholder] = useState<string | null>(() => getGalleryPlaceholder(page.id))
@@ -48,24 +50,39 @@ export function PageCard({ page, index, onOpen, onMenu }: Props) {
   }, [thumbKey])
 
   const preview = thumb ?? placeholder
+  const single = layout === 'single'
 
   return (
     <article
       ref={setNodeRef}
       style={style}
-      className={`gallery-card ${isDragging ? 'dragging' : ''}`}
+      className={`gallery-card ${single ? 'gallery-card-single' : ''} ${isDragging ? 'dragging' : ''}`}
     >
       <div className="gallery-card-top">
         <span className="gallery-page-no">{index + 1}</span>
-        <button
-          type="button"
-          className="drag-handle"
-          aria-label={`${index + 1}ページを並べ替え`}
-          {...attributes}
-          {...listeners}
-        >
-          ≡
-        </button>
+        <div className="gallery-card-top-actions">
+          {!single && (
+            <button
+              type="button"
+              className="drag-handle"
+              aria-label={`${index + 1}ページを並べ替え`}
+              {...attributes}
+              {...listeners}
+            >
+              ≡
+            </button>
+          )}
+          {single && (
+            <button
+              type="button"
+              className="gallery-menu-btn gallery-menu-btn-inline"
+              onClick={onMenu}
+              aria-label={`${index + 1}ページのメニュー`}
+            >
+              ⋯
+            </button>
+          )}
+        </div>
       </div>
       <button type="button" className="gallery-card-image" onClick={onOpen}>
         {preview ? (
@@ -78,9 +95,16 @@ export function PageCard({ page, index, onOpen, onMenu }: Props) {
           <span className="thumb-loading">…</span>
         )}
       </button>
-      <button type="button" className="gallery-menu-btn" onClick={onMenu} aria-label={`${index + 1}ページのメニュー`}>
-        ⋯
-      </button>
+      {!single && (
+        <button
+          type="button"
+          className="gallery-menu-btn"
+          onClick={onMenu}
+          aria-label={`${index + 1}ページのメニュー`}
+        >
+          ⋯
+        </button>
+      )}
     </article>
   )
 }

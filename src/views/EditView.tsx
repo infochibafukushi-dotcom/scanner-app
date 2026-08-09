@@ -4,7 +4,7 @@ import { CorrectedPreview } from '../components/CorrectedPreview'
 import { EditToolbar } from '../components/EditToolbar'
 import { FilterToolbar } from '../components/FilterToolbar'
 import { normalizeFilter, type BookFlattenMode, type EditTool, type FilterMode, type PaperSize, type ScanPage } from '../types'
-import { PAPER_OPTIONS, paperSizeLabel } from '../utils/paper'
+import { PAPER_OPTIONS, paperAutoDetectionHint, paperButtonLabel } from '../utils/paper'
 
 type Props = {
   page: ScanPage
@@ -48,7 +48,11 @@ export function EditView({
   const [paperOpen, setPaperOpen] = useState(false)
   const activeTool = editTool === 'enhance' ? 'crop' : editTool
   const pageFilter = normalizeFilter(page.filter)
-  const paperLabel = useMemo(() => paperSizeLabel(page.paperSize, page.corners), [page.corners, page.paperSize])
+  const paperLabel = useMemo(() => paperButtonLabel(page.paperSize), [page.paperSize])
+  const autoHint = useMemo(
+    () => (page.paperSize === 'auto' ? paperAutoDetectionHint(page.corners) : null),
+    [page.corners, page.paperSize]
+  )
 
   const handleTool = (tool: EditTool) => {
     if (tool === 'ocr') {
@@ -64,13 +68,13 @@ export function EditView({
   return (
     <div className={`edit-view tool-${activeTool === 'ocr' ? 'crop' : activeTool}`}>
       <header className="edit-view-header">
-        <button type="button" className="text-button" onClick={onBack} aria-label="戻る">
+        <button type="button" className="text-button edit-header-btn" onClick={onBack} aria-label="戻る">
           ←
         </button>
         <h1>
-          {pageIndex + 1} / {pageCount}ページ
+          {pageIndex + 1} / {pageCount}
         </h1>
-        <button type="button" className="text-button strong" onClick={onDone}>
+        <button type="button" className="text-button strong edit-header-btn" onClick={onDone}>
           完了
         </button>
       </header>
@@ -106,12 +110,15 @@ export function EditView({
                 className={`chip paper-toggle ${paperOpen ? 'active' : ''}`}
                 onClick={() => setPaperOpen((value) => !value)}
               >
-                用紙:{paperLabel}
+                用紙：{paperLabel}
               </button>
               <button type="button" className="chip" onClick={onSplitPage}>
                 左右分割
               </button>
             </div>
+            {page.paperSize === 'auto' && autoHint && !paperOpen && (
+              <p className="paper-auto-hint">判定：{autoHint}</p>
+            )}
             {paperOpen && (
               <div className="paper-chip-row chip-scroll" role="listbox" aria-label="用紙サイズ">
                 {PAPER_OPTIONS.map((option) => (

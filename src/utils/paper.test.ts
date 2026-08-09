@@ -4,6 +4,8 @@ import {
   guessAutoPaper,
   migratePaperSize,
   normalizePaperSize,
+  paperAutoDetectionHint,
+  paperButtonLabel,
   resolveTargetAspect
 } from './paper'
 
@@ -77,5 +79,18 @@ describe('resolveTargetAspect', () => {
     const card = quad(91, 55)
     expect(resolveTargetAspect('business-card', card)).toBeCloseTo(91 / 55, 5)
     expect(resolveTargetAspect('free', card)).toBeNull()
+  })
+})
+
+describe('paper button labels', () => {
+  it('keeps auto button label short without guess suffix', () => {
+    expect(paperButtonLabel('auto')).toBe('自動')
+    expect(paperButtonLabel('a4')).toBe('A4')
+    expect(paperButtonLabel('letter')).toBe('Letter')
+  })
+
+  it('exposes auto detection as a compact hint', () => {
+    expect(paperAutoDetectionHint(quad(215.9, 279.4))).toBe('Letter')
+    expect(paperAutoDetectionHint(quad(210, 297))).toBe('A判')
   })
 })
