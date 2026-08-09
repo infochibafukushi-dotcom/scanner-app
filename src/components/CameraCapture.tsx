@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Point } from '../types'
 import { captureStillDataUrl, openRearCamera } from '../utils/cameraCapture'
-import { AUTO_CAPTURE_CONFIDENCE } from '../utils/corners'
-import { detectLiveDocumentCorners, frameDifference, readSmallVideoFrame } from '../utils/liveCorners'
+import {
+  AUTO_CAPTURE_CONFIDENCE,
+  AUTO_CAPTURE_STABLE_DELTA,
+  AUTO_CAPTURE_STABLE_FRAMES
+} from '../utils/corners'
+import {
+  detectLiveDocumentCorners,
+  frameDifference,
+  readSmallVideoFrame,
+  smoothCorners
+} from '../utils/liveCorners'
 import '../highres.css'
 
 type CameraCaptureProps = {
@@ -30,7 +39,8 @@ export function CameraCapture({
   const streamRef = useRef<MediaStream | null>(null)
   const trackRef = useRef<MediaStreamTrack | null>(null)
   const lastCornersRef = useRef<Point[] | null>(null)
-  const stableSinceRef = useRef<number | null>(null)
+  const displayCornersRef = useRef<[Point, Point, Point, Point] | null>(null)
+  const stableFramesRef = useRef(0)
   const previousFrameRef = useRef<ImageData | null>(null)
   const capturingRef = useRef(false)
   const autoArmedRef = useRef(true)
@@ -52,8 +62,9 @@ export function CameraCapture({
     autoArmedRef.current = true
     missingSinceRef.current = null
     lockedCornersRef.current = null
-    stableSinceRef.current = null
+    stableFramesRef.current = 0
     lastCornersRef.current = null
+    displayCornersRef.current = null
     setHoldMessage('')
     setCorners(null)
 
@@ -103,7 +114,7 @@ export function CameraCapture({
         autoArmedRef.current = false
         lockedCornersRef.current = lastCornersRef.current
         missingSinceRef.current = null
-        stableSinceRef.current = null
+        stableFramesRef.current = 0
         setHoldMessage('撮影しました\n次の書類を映してください')
       }
     } catch (captureError) {
@@ -132,7 +143,8 @@ export function CameraCapture({
       if (!result?.detected) {
         setCorners(null)
         lastCornersRef.current = null
-        stableSinceRef.current = null
+        displayCornersRef.current = null
+        stableFramesRef.current = 0
         if (!autoCapture) return
         if (!autoArmedRef.current) {
           missingSinceRef.current ??= Date.now()
@@ -146,7 +158,9 @@ export function CameraCapture({
         return
       }
 
-      setCorners(result.corners)
+      const smoothed = smoothCorners(displayCornersRef.current, result.corners)
+      displayCornersRef.current = smoothed
+      setCorners(smoothed)
       const previous = lastCornersRef.current
       lastCornersRef.current = result.corners
       const confident = result.confidence >= AUTO_CAPTURE_CONFIDENCE
@@ -169,29 +183,35 @@ export function CameraCapture({
 
       missingSinceRef.current = null
       if (!confident) {
-        stableSinceRef.current = null
+        stableFramesRef.current = 0
         setHoldMessage('四隅を確認してください')
         return
       }
 
-      const stableCorners = previous ? cornerDelta(previous, result.corners) < 0.025 : false
-      const still = motion.difference < 7
+      const stableCorners = previous
+        ? cornerDelta(previous, result.corners) < AUTO_CAPTURE_STABLE_DELTA
+        : false
+      const still = motion.difference < 6.5
       if (stableCorners && still) {
-        stableSinceRef.current ??= Date.now()
-        const elapsed = Date.now() - stableSinceRef.current
-        setHoldMessage(elapsed > 450 ? 'そのまま保持してください' : '書類を動かさないでください')
-        if (elapsed >= 850) {
-          stableSinceRef.current = null
+        stableFramesRef.current += 1
+        setHoldMessage(
+          stableFramesRef.current >= Math.max(2, AUTO_CAPTURE_STABLE_FRAMES - 1)
+            ? 'そのまま保持してください'
+            : '書類を動かさないでください'
+        )
+        if (stableFramesRef.current >= AUTO_CAPTURE_STABLE_FRAMES) {
+          stableFramesRef.current = 0
           void capture()
         }
       } else {
-        stableSinceRef.current = null
+        stableFramesRef.current = 0
+        setHoldMessage('書類を動かさないでください')
       }
     }
 
     const interval = window.setInterval(() => {
       void tick()
-    }, 380)
+    }, 320)
     return () => {
       stopped = true
       window.clearInterval(interval)

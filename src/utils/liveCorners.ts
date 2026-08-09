@@ -1,24 +1,40 @@
 import type { CornerDetectionResult, Point } from '../types'
-import { detectDocumentCorners } from './corners'
+import { detectDocumentCornersFromImageData } from './corners'
 
 export type LiveCornerResult = CornerDetectionResult
+
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value))
+
+/** Exponential smoothing to reduce live-preview jitter. */
+export const smoothCorners = (
+  previous: [Point, Point, Point, Point] | null,
+  next: [Point, Point, Point, Point],
+  alpha = 0.42
+): [Point, Point, Point, Point] => {
+  if (!previous) return next
+  return previous.map((point, index) => ({
+    x: clamp01(point.x * (1 - alpha) + next[index].x * alpha),
+    y: clamp01(point.y * (1 - alpha) + next[index].y * alpha)
+  })) as [Point, Point, Point, Point]
+}
 
 /** Captures a small frame so contour work does not compete with camera rendering. */
 export const detectLiveDocumentCorners = async (
   video: HTMLVideoElement,
-  maxSide = 420
+  maxSide = 480
 ): Promise<LiveCornerResult | null> => {
   if (!video.videoWidth || !video.videoHeight) return null
 
   const scale = Math.min(1, maxSide / Math.max(video.videoWidth, video.videoHeight))
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(80, Math.round(video.videoWidth * scale))
-  canvas.height = Math.max(80, Math.round(video.videoHeight * scale))
-  const context = canvas.getContext('2d')
+  canvas.width = Math.max(96, Math.round(video.videoWidth * scale))
+  canvas.height = Math.max(96, Math.round(video.videoHeight * scale))
+  const context = canvas.getContext('2d', { willReadFrequently: true })
   if (!context) return null
 
   context.drawImage(video, 0, 0, canvas.width, canvas.height)
-  return detectDocumentCorners(canvas.toDataURL('image/jpeg', 0.72))
+  // Skip JPEG encode/decode — feed pixels directly into the detector.
+  return detectDocumentCornersFromImageData(context.getImageData(0, 0, canvas.width, canvas.height))
 }
 
 export const frameDifference = (

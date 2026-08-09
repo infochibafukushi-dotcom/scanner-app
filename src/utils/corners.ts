@@ -50,16 +50,17 @@ const robustLineFit = (candidates: Candidate[]): Line | null => {
   if (candidates.length < 12) return null
 
   const weights = candidates.map((point) => point.weight).sort((a, b) => a - b)
-  const cutoff = weights[Math.floor(weights.length * 0.58)] ?? 0
+  const cutoff = weights[Math.floor(weights.length * 0.55)] ?? 0
   let working = candidates.filter((point) => point.weight >= cutoff)
+  if (working.length < 12) working = candidates
 
-  for (let iteration = 0; iteration < 3; iteration += 1) {
+  for (let iteration = 0; iteration < 4; iteration += 1) {
     const line = weightedLineFit(working)
     if (!line) return null
 
     const residuals = working.map((point) => Math.abs(point.v - (line.a * point.t + line.b)))
     const typicalResidual = median(residuals)
-    const limit = Math.max(4, typicalResidual * 2.8)
+    const limit = Math.max(3.5, typicalResidual * 2.55)
     const filtered = working.filter((point) => Math.abs(point.v - (line.a * point.t + line.b)) <= limit)
 
     if (filtered.length < 10 || filtered.length === working.length) return line
@@ -107,6 +108,12 @@ const polygonArea = (points: Point[]) => {
   return Math.abs(area) / 2
 }
 
+const cornerDistance = (a: [Point, Point, Point, Point], b: [Point, Point, Point, Point]) => {
+  let sum = 0
+  for (let i = 0; i < 4; i += 1) sum += Math.hypot(a[i].x - b[i].x, a[i].y - b[i].y)
+  return sum / 4
+}
+
 const intersect = (horizontal: Line, vertical: Line): Point | null => {
   const denominator = 1 - vertical.a * horizontal.a
   if (Math.abs(denominator) < 1e-6) return null
@@ -145,8 +152,8 @@ const angleScore = (corners: Point[]) => {
     const cos = clamp((ax * bx + ay * by) / denom, -1, 1)
     const angle = Math.acos(cos)
     const delta = Math.abs(angle - Math.PI / 2)
-    if (delta > 1.1) return 0
-    score *= 1 - delta / 1.4
+    if (delta > 1.15) return 0
+    score *= 1 - delta / 1.45
   }
   return score
 }
@@ -159,7 +166,7 @@ const sampleEdgeStrength = (
   b: Point
 ) => {
   let sum = 0
-  const steps = 24
+  const steps = 28
   for (let i = 0; i <= steps; i += 1) {
     const t = i / steps
     const x = clamp(Math.round(a.x + (b.x - a.x) * t), 1, width - 2)
@@ -190,10 +197,10 @@ const insideOutsideContrast = (
     const nx = mx - cx
     const ny = my - cy
     const length = Math.hypot(nx, ny) || 1
-    const inX = clamp(Math.round(mx - (nx / length) * 8), 0, width - 1)
-    const inY = clamp(Math.round(my - (ny / length) * 8), 0, height - 1)
-    const outX = clamp(Math.round(mx + (nx / length) * 8), 0, width - 1)
-    const outY = clamp(Math.round(my + (ny / length) * 8), 0, height - 1)
+    const inX = clamp(Math.round(mx - (nx / length) * 10), 0, width - 1)
+    const inY = clamp(Math.round(my - (ny / length) * 10), 0, height - 1)
+    const outX = clamp(Math.round(mx + (nx / length) * 10), 0, width - 1)
+    const outY = clamp(Math.round(my + (ny / length) * 10), 0, height - 1)
     inside += gray[inY * width + inX]
     outside += gray[outY * width + outX]
     insideCount += 1
@@ -201,7 +208,19 @@ const insideOutsideContrast = (
   }
 
   if (!insideCount || !outsideCount) return 0
-  return Math.min(1, Math.abs(inside / insideCount - outside / outsideCount) / 48)
+  return Math.min(1, Math.abs(inside / insideCount - outside / outsideCount) / 42)
+}
+
+/** Penalize quads that hug the image border (often the phone frame / table crop). */
+const borderHugPenalty = (corners: Point[]) => {
+  const margin = 0.04
+  let near = 0
+  for (const point of corners) {
+    if (point.x <= margin || point.x >= 1 - margin || point.y <= margin || point.y >= 1 - margin) near += 1
+  }
+  if (near >= 4) return 0.72
+  if (near === 3) return 0.88
+  return 1
 }
 
 const scoreCandidate = (
@@ -216,10 +235,10 @@ const scoreCandidate = (
   if (
     cornersPx.some(
       (point) =>
-        point.x < -width * 0.06 ||
-        point.x > width * 1.06 ||
-        point.y < -height * 0.06 ||
-        point.y > height * 1.06
+        point.x < -width * 0.08 ||
+        point.x > width * 1.08 ||
+        point.y < -height * 0.08 ||
+        point.y > height * 1.08
     )
   ) {
     return null
@@ -233,7 +252,7 @@ const scoreCandidate = (
   if (!isConvexQuad(normalized)) return null
 
   const area = polygonArea(normalized)
-  if (area < 0.12) return null
+  if (area < 0.1) return null
 
   const [tl, tr, br, bl] = normalized
   const top = Math.hypot(tr.x - tl.x, tr.y - tl.y)
@@ -241,13 +260,16 @@ const scoreCandidate = (
   const left = Math.hypot(bl.x - tl.x, bl.y - tl.y)
   const right = Math.hypot(br.x - tr.x, br.y - tr.y)
   const minSide = Math.min(top, bottom, left, right)
-  if (minSide < 0.18) return null
+  if (minSide < 0.16) return null
 
   const oppositePair =
     1 -
-    Math.min(1, (Math.abs(top - bottom) / Math.max(top, bottom) + Math.abs(left - right) / Math.max(left, right)) / 2)
-  const aspect = ((top + bottom) / 2) / Math.max(1e-6, (left + right) / 2)
-  const realisticAspect = aspect > 0.2 && aspect < 5 ? 1 : 0.2
+    Math.min(
+      1,
+      (Math.abs(top - bottom) / Math.max(top, bottom) + Math.abs(left - right) / Math.max(left, right)) / 2
+    )
+  const aspect = (top + bottom) / 2 / Math.max(1e-6, (left + right) / 2)
+  const realisticAspect = aspect > 0.18 && aspect < 5.5 ? 1 : 0.15
   const angles = angleScore(normalized)
   if (angles <= 0) return null
 
@@ -257,26 +279,32 @@ const scoreCandidate = (
       sampleEdgeStrength(mag, width, height, cornersPx[2], cornersPx[3]) +
       sampleEdgeStrength(mag, width, height, cornersPx[3], cornersPx[0])) /
     4
-  const edgeScore = Math.min(1, edgeStrength / 40)
+  const edgeScore = Math.min(1, edgeStrength / 36)
   const contrast = insideOutsideContrast(gray, width, height, cornersPx)
-  const areaScore = area < 0.18 ? area / 0.18 * 0.55 : Math.min(1, area / 0.55)
-  const qualityScore = Math.min(1, lineQuality / 35)
+  const areaScore = area < 0.16 ? (area / 0.16) * 0.5 : Math.min(1, area / 0.52)
+  const qualityScore = Math.min(1, lineQuality / 32)
+  const borderScore = borderHugPenalty(normalized)
+
+  // Near-full-frame quads need strong edge+contrast evidence (avoid detecting the viewport).
+  const fullFramePenalty = area > 0.86 && edgeScore < 0.42 ? 0.78 : 1
 
   const score =
-    areaScore * 0.22 +
-    oppositePair * 0.14 +
-    angles * 0.16 +
-    edgeScore * 0.22 +
-    contrast * 0.12 +
-    qualityScore * 0.1 +
-    realisticAspect * 0.04
+    (areaScore * 0.2 +
+      oppositePair * 0.13 +
+      angles * 0.15 +
+      edgeScore * 0.24 +
+      contrast * 0.14 +
+      qualityScore * 0.1 +
+      realisticAspect * 0.04) *
+    borderScore *
+    fullFramePenalty
 
   const confidence = clamp(score, 0, 1)
-  if (confidence < 0.34) return null
+  if (confidence < 0.32) return null
 
   const clamped = normalized.map((point) => ({
-    x: clamp(point.x, 0.015, 0.985),
-    y: clamp(point.y, 0.015, 0.985)
+    x: clamp(point.x, 0.012, 0.988),
+    y: clamp(point.y, 0.012, 0.988)
   })) as [Point, Point, Point, Point]
 
   return { corners: clamped, score, confidence }
@@ -285,7 +313,7 @@ const scoreCandidate = (
 const enhanceContrast = (gray: Uint8Array) => {
   let min = 255
   let max = 0
-  for (let i = 0; i < gray.length; i += 8) {
+  for (let i = 0; i < gray.length; i += 6) {
     const value = gray[i]
     if (value < min) min = value
     if (value > max) max = value
@@ -316,8 +344,56 @@ const localNormalize = (gray: Uint8Array, width: number, height: number) => {
   return out
 }
 
-const detectFromGray = (gray: Uint8Array, width: number, height: number): ScoredCorners | null => {
-  const blurred = blurGrayscale(gray, width, height, 2)
+/** Emphasize paper vs background for low-contrast desks. */
+const stretchMidtones = (gray: Uint8Array) => {
+  const hist = new Uint32Array(256)
+  for (let i = 0; i < gray.length; i += 1) hist[gray[i]] += 1
+  const total = gray.length
+  let acc = 0
+  let low = 0
+  let high = 255
+  const loTarget = total * 0.05
+  for (let v = 0; v < 256; v += 1) {
+    acc += hist[v]
+    if (acc >= loTarget) {
+      low = v
+      break
+    }
+  }
+  acc = 0
+  for (let v = 255; v >= 0; v -= 1) {
+    acc += hist[v]
+    if (acc >= total * 0.05) {
+      high = v
+      break
+    }
+  }
+  const range = Math.max(24, high - low)
+  const out = new Uint8Array(gray.length)
+  for (let i = 0; i < gray.length; i += 1) {
+    out[i] = clamp(Math.round(((gray[i] - low) / range) * 255), 0, 255)
+  }
+  return out
+}
+
+const magnitudeFloor = (mag: Float32Array) => {
+  let sum = 0
+  let count = 0
+  for (let i = 0; i < mag.length; i += 11) {
+    sum += mag[i]
+    count += 1
+  }
+  const mean = sum / Math.max(1, count)
+  return mean * 1.15 + 6
+}
+
+const detectFromGray = (
+  gray: Uint8Array,
+  width: number,
+  height: number,
+  blurRadius = 2
+): ScoredCorners | null => {
+  const blurred = blurGrayscale(gray, width, height, blurRadius)
   const gx = new Float32Array(width * height)
   const gy = new Float32Array(width * height)
   const mag = new Float32Array(width * height)
@@ -339,22 +415,23 @@ const detectFromGray = (gray: Uint8Array, width: number, height: number): Scored
     }
   }
 
+  const floor = magnitudeFloor(mag)
   const top: Candidate[] = []
   const bottom: Candidate[] = []
   const left: Candidate[] = []
   const right: Candidate[] = []
-  const xStep = Math.max(2, Math.round(width / 170))
-  const yStep = Math.max(2, Math.round(height / 170))
-  const topStart = Math.round(height * 0.02)
-  const topEnd = Math.round(height * 0.5)
-  const bottomStart = Math.round(height * 0.5)
-  const bottomEnd = Math.round(height * 0.98)
-  const leftStart = Math.round(width * 0.02)
-  const leftEnd = Math.round(width * 0.5)
-  const rightStart = Math.round(width * 0.5)
-  const rightEnd = Math.round(width * 0.98)
+  const xStep = Math.max(2, Math.round(width / 180))
+  const yStep = Math.max(2, Math.round(height / 180))
+  const topStart = Math.round(height * 0.015)
+  const topEnd = Math.round(height * 0.55)
+  const bottomStart = Math.round(height * 0.45)
+  const bottomEnd = Math.round(height * 0.985)
+  const leftStart = Math.round(width * 0.015)
+  const leftEnd = Math.round(width * 0.55)
+  const rightStart = Math.round(width * 0.45)
+  const rightEnd = Math.round(width * 0.985)
 
-  for (let x = Math.round(width * 0.05); x < width * 0.95; x += xStep) {
+  for (let x = Math.round(width * 0.04); x < width * 0.96; x += xStep) {
     let bestTop = { y: topStart, score: 0 }
     let bestBottom = { y: bottomStart, score: 0 }
     for (let y = topStart; y <= topEnd; y += 1) {
@@ -365,11 +442,11 @@ const detectFromGray = (gray: Uint8Array, width: number, height: number): Scored
       const score = gy[y * width + x]
       if (score > bestBottom.score) bestBottom = { y, score }
     }
-    top.push({ t: x, v: bestTop.y, weight: bestTop.score })
-    bottom.push({ t: x, v: bestBottom.y, weight: bestBottom.score })
+    if (bestTop.score >= floor) top.push({ t: x, v: bestTop.y, weight: bestTop.score })
+    if (bestBottom.score >= floor) bottom.push({ t: x, v: bestBottom.y, weight: bestBottom.score })
   }
 
-  for (let y = Math.round(height * 0.05); y < height * 0.95; y += yStep) {
+  for (let y = Math.round(height * 0.04); y < height * 0.96; y += yStep) {
     let bestLeft = { x: leftStart, score: 0 }
     let bestRight = { x: rightStart, score: 0 }
     for (let x = leftStart; x <= leftEnd; x += 1) {
@@ -380,8 +457,8 @@ const detectFromGray = (gray: Uint8Array, width: number, height: number): Scored
       const score = gx[y * width + x]
       if (score > bestRight.score) bestRight = { x, score }
     }
-    left.push({ t: y, v: bestLeft.x, weight: bestLeft.score })
-    right.push({ t: y, v: bestRight.x, weight: bestRight.score })
+    if (bestLeft.score >= floor) left.push({ t: y, v: bestLeft.x, weight: bestLeft.score })
+    if (bestRight.score >= floor) right.push({ t: y, v: bestRight.x, weight: bestRight.score })
   }
 
   const topLine = robustLineFit(top)
@@ -402,13 +479,83 @@ const detectFromGray = (gray: Uint8Array, width: number, height: number): Scored
   return scoreCandidate(rawCorners as Point[], width, height, gray, mag, lineQuality)
 }
 
+const pickBestWithConsensus = (candidates: ScoredCorners[]): ScoredCorners | null => {
+  if (!candidates.length) return null
+  const ranked = [...candidates].sort((a, b) => b.score - a.score)
+  const best = ranked[0]
+  let agreements = 0
+  for (let i = 1; i < ranked.length; i += 1) {
+    if (cornerDistance(best.corners, ranked[i].corners) <= 0.045) agreements += 1
+  }
+  if (agreements > 0) {
+    return {
+      ...best,
+      confidence: clamp(best.confidence + 0.06 * Math.min(3, agreements), 0, 1),
+      score: best.score + 0.03 * agreements
+    }
+  }
+  return best
+}
+
+/** Core multi-pass detector used by still and live paths. */
+export const runCornerDetectionOnGray = (
+  baseGray: Uint8Array,
+  width: number,
+  height: number
+): CornerDetectionResult => {
+  const enhanced = enhanceContrast(baseGray)
+  const passes: { gray: Uint8Array; blur: number }[] = [
+    { gray: baseGray, blur: 2 },
+    { gray: enhanced, blur: 2 },
+    { gray: liftShadows(baseGray), blur: 2 },
+    { gray: localNormalize(baseGray, width, height), blur: 2 },
+    { gray: stretchMidtones(baseGray), blur: 2 },
+    { gray: enhanced, blur: 1 },
+    { gray: blurGrayscale(enhanced, width, height, 1), blur: 3 }
+  ]
+
+  const scored: ScoredCorners[] = []
+  for (const pass of passes) {
+    const candidate = detectFromGray(pass.gray, width, height, pass.blur)
+    if (candidate) scored.push(candidate)
+  }
+
+  const best = pickBestWithConsensus(scored)
+  if (!best) return { corners: defaultCorners(), detected: false, confidence: 0 }
+  return {
+    corners: best.corners,
+    detected: true,
+    confidence: best.confidence
+  }
+}
+
+const grayFromImageData = (imageData: ImageData) => {
+  const { data, width, height } = imageData
+  const baseGray = new Uint8Array(width * height)
+  for (let pixel = 0, i = 0; i < data.length; i += 4, pixel += 1) {
+    baseGray[pixel] = grayscale(data[i], data[i + 1], data[i + 2])
+  }
+  return { baseGray, width, height }
+}
+
+/** Detect from an already-drawn canvas/ImageData (avoids JPEG round-trip for live preview). */
+export const detectDocumentCornersFromImageData = (imageData: ImageData): CornerDetectionResult => {
+  try {
+    const { baseGray, width, height } = grayFromImageData(imageData)
+    return runCornerDetectionOnGray(baseGray, width, height)
+  } catch (error) {
+    console.warn('Document corner detection failed.', error)
+    return { corners: defaultCorners(), detected: false, confidence: 0 }
+  }
+}
+
 export const detectDocumentCorners = async (dataUrl: string): Promise<CornerDetectionResult> => {
   try {
     const image = await loadImage(dataUrl)
-    const maxSide = 720
+    const maxSide = 900
     const scale = Math.min(1, maxSide / Math.max(image.width, image.height))
-    const width = Math.max(80, Math.round(image.width * scale))
-    const height = Math.max(80, Math.round(image.height * scale))
+    const width = Math.max(96, Math.round(image.width * scale))
+    const height = Math.max(96, Math.round(image.height * scale))
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
@@ -416,32 +563,7 @@ export const detectDocumentCorners = async (dataUrl: string): Promise<CornerDete
     if (!ctx) return { corners: defaultCorners(), detected: false, confidence: 0 }
 
     ctx.drawImage(image, 0, 0, width, height)
-    const source = ctx.getImageData(0, 0, width, height).data
-    const baseGray = new Uint8Array(width * height)
-    for (let pixel = 0, i = 0; i < source.length; i += 4, pixel += 1) {
-      baseGray[pixel] = grayscale(source[i], source[i + 1], source[i + 2])
-    }
-
-    const passes = [
-      baseGray,
-      enhanceContrast(baseGray),
-      liftShadows(baseGray),
-      localNormalize(baseGray, width, height)
-    ]
-
-    let best: ScoredCorners | null = null
-    for (const gray of passes) {
-      const candidate = detectFromGray(gray, width, height)
-      if (!candidate) continue
-      if (!best || candidate.score > best.score) best = candidate
-    }
-
-    if (!best) return { corners: defaultCorners(), detected: false, confidence: 0 }
-    return {
-      corners: best.corners,
-      detected: true,
-      confidence: best.confidence
-    }
+    return detectDocumentCornersFromImageData(ctx.getImageData(0, 0, width, height))
   } catch (error) {
     console.warn('Document corner detection failed.', error)
     return { corners: defaultCorners(), detected: false, confidence: 0 }
@@ -449,4 +571,10 @@ export const detectDocumentCorners = async (dataUrl: string): Promise<CornerDete
 }
 
 /** Confidence threshold for allowing auto-shutter. */
-export const AUTO_CAPTURE_CONFIDENCE = 0.62
+export const AUTO_CAPTURE_CONFIDENCE = 0.6
+
+/** How close successive live detections must stay to count as stable. */
+export const AUTO_CAPTURE_STABLE_DELTA = 0.022
+
+/** Consecutive confident+stable frames required before auto shutter. */
+export const AUTO_CAPTURE_STABLE_FRAMES = 3
