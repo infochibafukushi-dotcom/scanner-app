@@ -24,7 +24,11 @@ type CornerEditorProps = {
 type Viewport = { scale: number; x: number; y: number }
 type Loupe = { x: number; y: number; size: number; point: Point }
 
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+const clamp = (value: number, min: number, max: number) => {
+  if (!(Number.isFinite(min) && Number.isFinite(max))) return value
+  if (max < min) return min
+  return Math.min(max, Math.max(min, value))
+}
 const pointerDistance = (first: PointerEvent, second: PointerEvent) =>
   Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY)
 
@@ -84,7 +88,7 @@ export function CornerEditor({
   const pointersRef = useRef(new Map<number, PointerEvent>())
   const panRef = useRef<{ pointerId: number; clientX: number; clientY: number; view: Viewport } | null>(null)
   const pinchRef = useRef<{ distance: number; centerX: number; centerY: number; view: Viewport } | null>(null)
-  const [activeIndex, setActiveIndex] = useState<number | null>(null)
+  const activeIndexRef = useRef<number | null>(null)
   const [ratio, setRatio] = useState(1)
   const [previewUrl, setPreviewUrl] = useState(imageUrl)
   const [filtering, setFiltering] = useState(false)
@@ -171,10 +175,10 @@ export function CornerEditor({
   const paintLoupe = (point: Point, size: number) => {
     const canvas = loupeCanvasRef.current
     const source = previewCanvasRef.current
-    if (!canvas || !source) return
+    if (!canvas || !source || source.width < 1 || source.height < 1) return
 
     const dpr = Math.min(2, window.devicePixelRatio || 1)
-    const pixelSize = Math.round(size * dpr)
+    const pixelSize = Math.max(1, Math.round(size * dpr))
     if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
       canvas.width = pixelSize
       canvas.height = pixelSize
@@ -192,30 +196,48 @@ export function CornerEditor({
     const container = containerRef.current
     const rect = container?.getBoundingClientRect()
     const view = viewportRef.current
-    const displayWidth = Math.max(1, (rect?.width ?? source.width) * view.scale)
-    const srcCrop = Math.max(12, (size / LOUPE_ZOOM) * (source.width / displayWidth))
-    const cx = point.x * source.width
-    const cy = point.y * source.height
+    // Compact layout can briefly report 0×0; never let that inflate srcCrop.
+    const displayWidth = Math.max(48, (rect?.width && rect.width > 1 ? rect.width : source.width) * Math.max(0.01, view.scale))
+    const idealCrop = (size / LOUPE_ZOOM) * (source.width / displayWidth)
+    const srcCrop = clamp(idealCrop, 12, Math.min(source.width, source.height))
+    const cx = clamp(point.x, 0, 1) * source.width
+    const cy = clamp(point.y, 0, 1) * source.height
+
+    // Keep source rect fully inside the canvas — out-of-bounds drawImage throws IndexSizeError.
+    let sx = cx - srcCrop / 2
+    let sy = cy - srcCrop / 2
+    let sw = srcCrop
+    let sh = srcCrop
+    if (sx < 0) {
+      sw += sx
+      sx = 0
+    }
+    if (sy < 0) {
+      sh += sy
+      sy = 0
+    }
+    if (sx + sw > source.width) sw = source.width - sx
+    if (sy + sh > source.height) sh = source.height - sy
+    if (sw < 1 || sh < 1) return
 
     ctx.clearRect(0, 0, pixelSize, pixelSize)
     ctx.fillStyle = '#020617'
     ctx.fillRect(0, 0, pixelSize, pixelSize)
-    ctx.drawImage(
-      source,
-      cx - srcCrop / 2,
-      cy - srcCrop / 2,
-      srcCrop,
-      srcCrop,
-      0,
-      0,
-      pixelSize,
-      pixelSize
-    )
+    try {
+      ctx.drawImage(source, sx, sy, sw, sh, 0, 0, pixelSize, pixelSize)
+    } catch (error) {
+      console.warn('loupe draw skipped', error)
+    }
   }
 
   useEffect(() => {
     if (!loupe) return
+    // Portal canvas mounts after commit; paint on the next frame if ref is still null.
     paintLoupe(loupe.point, loupe.size)
+    if (!loupeCanvasRef.current) {
+      const id = window.requestAnimationFrame(() => paintLoupe(loupe.point, loupe.size))
+      return () => window.cancelAnimationFrame(id)
+    }
   }, [loupe])
 
   const updateLoupe = (clientX: number, clientY: number, point: Point, cornerIndex: number) => {
@@ -240,7 +262,7 @@ export function CornerEditor({
   }
 
   const onViewportPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (activeIndex !== null) return
+    if (activeIndexRef.current !== null) return
     event.currentTarget.setPointerCapture(event.pointerId)
     pointersRef.current.set(event.pointerId, event.nativeEvent)
     if (pointersRef.current.size === 1) beginPan(event.nativeEvent)
@@ -248,7 +270,7 @@ export function CornerEditor({
   }
 
   const onViewportPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (activeIndex !== null) return
+    if (activeIndexRef.current !== null) return
     pointersRef.current.set(event.pointerId, event.nativeEvent)
     const pinch = pinchRef.current
     if (pinch && pointersRef.current.size >= 2) {
@@ -347,20 +369,20 @@ export function CornerEditor({
                 event.preventDefault()
                 event.stopPropagation()
                 event.currentTarget.setPointerCapture(event.pointerId)
-                setActiveIndex(index)
+                activeIndexRef.current = index
                 updateCorner(index, event.clientX, event.clientY)
               }}
               onPointerMove={(event) => {
-                if (activeIndex === index) updateCorner(index, event.clientX, event.clientY)
+                if (activeIndexRef.current === index) updateCorner(index, event.clientX, event.clientY)
               }}
               onPointerUp={() => {
-                if (activeIndex === index) {
-                  setActiveIndex(null)
+                if (activeIndexRef.current === index) {
+                  activeIndexRef.current = null
                   setLoupe(null)
                 }
               }}
               onPointerCancel={() => {
-                setActiveIndex(null)
+                activeIndexRef.current = null
                 setLoupe(null)
               }}
               aria-label={labels[index]}
