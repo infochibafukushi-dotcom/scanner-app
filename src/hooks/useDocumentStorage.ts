@@ -107,7 +107,8 @@ export const useDocumentStorage = ({
             setStorageWarning('端末の保存容量が不足しています')
             setSaveStatus('error')
           } else {
-            setSaveStatus('unavailable')
+            // Keep scanning usable; retry on the next change.
+            setSaveStatus('error')
             setStorageWarning('自動保存を利用できません')
           }
         }

@@ -181,28 +181,55 @@ export const estimateStorage = async () => {
 
 export const loadActiveDocument = async (): Promise<PersistedDocument | null> => {
   const db = await openDatabase()
-  const tx = db.transaction([STORE_DOCUMENTS, STORE_PAGES, STORE_IMAGES], 'readonly')
-  const docs = tx.objectStore(STORE_DOCUMENTS)
-  const allDocs = await requestToPromise(docs.getAll() as IDBRequest<DocumentMeta[]>)
+  const allDocs = await new Promise<DocumentMeta[]>((resolve, reject) => {
+    const tx = db.transaction([STORE_DOCUMENTS], 'readonly')
+    const request = tx.objectStore(STORE_DOCUMENTS).getAll()
+    request.onsuccess = () => resolve((request.result as DocumentMeta[]) ?? [])
+    request.onerror = () => reject(request.error ?? new Error('Failed to load documents'))
+  })
+
   const active =
     allDocs
       .filter((doc) => doc.status === 'active')
       .sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null
-  if (!active || !active.pageOrder.length) {
-    await txDone(tx)
-    return null
-  }
+  if (!active || !active.pageOrder.length) return null
 
-  const pageStore = tx.objectStore(STORE_PAGES)
-  const imageStore = tx.objectStore(STORE_IMAGES)
+  const pageRecords = await new Promise<PageRecord[]>((resolve, reject) => {
+    const tx = db.transaction([STORE_PAGES], 'readonly')
+    const request = tx.objectStore(STORE_PAGES).index('documentId').getAll(active.id)
+    request.onsuccess = () => resolve((request.result as PageRecord[]) ?? [])
+    request.onerror = () => reject(request.error ?? new Error('Failed to load pages'))
+  })
+
+  const recordById = new Map(pageRecords.map((record) => [record.id, record]))
+  const imageById = await new Promise<Map<string, ImageRecord>>((resolve, reject) => {
+    const tx = db.transaction([STORE_IMAGES], 'readonly')
+    const store = tx.objectStore(STORE_IMAGES)
+    const map = new Map<string, ImageRecord>()
+    let pending = active.pageOrder.length
+    if (!pending) {
+      resolve(map)
+      return
+    }
+    for (const pageId of active.pageOrder) {
+      const request = store.get(pageId)
+      request.onsuccess = () => {
+        const image = request.result as ImageRecord | undefined
+        if (image) map.set(pageId, image)
+        pending -= 1
+        if (!pending) resolve(map)
+      }
+      request.onerror = () => reject(request.error ?? new Error('Failed to load images'))
+    }
+  })
+
   const pages: ScanPage[] = []
   for (const pageId of active.pageOrder) {
-    const record = await requestToPromise(pageStore.get(pageId) as IDBRequest<PageRecord | undefined>)
-    const image = await requestToPromise(imageStore.get(pageId) as IDBRequest<ImageRecord | undefined>)
+    const record = recordById.get(pageId)
+    const image = imageById.get(pageId)
     if (!record || !image) continue
     pages.push(fromPageRecord(record, blobToObjectUrl(image.blob)))
   }
-  await txDone(tx)
   if (!pages.length) return null
   return { meta: active, pages }
 }
@@ -213,15 +240,32 @@ export const saveDocument = async (params: {
   selectedId: string | null
   pages: ScanPage[]
 }): Promise<void> => {
+  // Convert images before opening a transaction. Awaiting fetch/blob work inside
+  // an IDB transaction aborts it (TransactionInactiveError).
+  const imageRecords: ImageRecord[] = await Promise.all(
+    params.pages.map(async (page) => {
+      const blob = await dataUrlToBlob(page.dataUrl)
+      return {
+        pageId: page.id,
+        blob,
+        mimeType: blob.type || 'image/jpeg'
+      }
+    })
+  )
+
   const db = await openDatabase()
+  const existingPages = await new Promise<PageRecord[]>((resolve, reject) => {
+    const readTx = db.transaction([STORE_PAGES], 'readonly')
+    const request = readTx.objectStore(STORE_PAGES).index('documentId').getAll(params.documentId)
+    request.onsuccess = () => resolve((request.result as PageRecord[]) ?? [])
+    request.onerror = () => reject(request.error ?? new Error('Failed to list pages'))
+  })
+
   const tx = db.transaction([STORE_DOCUMENTS, STORE_PAGES, STORE_IMAGES], 'readwrite')
   const docStore = tx.objectStore(STORE_DOCUMENTS)
   const pageStore = tx.objectStore(STORE_PAGES)
   const imageStore = tx.objectStore(STORE_IMAGES)
 
-  const existingPages = await requestToPromise(
-    pageStore.index('documentId').getAll(params.documentId) as IDBRequest<PageRecord[]>
-  )
   const keep = new Set(params.pages.map((page) => page.id))
   for (const old of existingPages) {
     if (!keep.has(old.id)) {
@@ -232,12 +276,8 @@ export const saveDocument = async (params: {
 
   for (const page of params.pages) {
     pageStore.put(toPageRecord(page, params.documentId))
-    const blob = await dataUrlToBlob(page.dataUrl)
-    const image: ImageRecord = {
-      pageId: page.id,
-      blob,
-      mimeType: blob.type || 'image/jpeg'
-    }
+  }
+  for (const image of imageRecords) {
     imageStore.put(image)
   }
 
