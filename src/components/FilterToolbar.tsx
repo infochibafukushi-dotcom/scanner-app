@@ -18,9 +18,12 @@ export function FilterToolbar({
   onToggleFlattenBook
 }: Props) {
   const current = normalizeFilter(filter)
-  const hint =
-    UI_FILTER_OPTIONS.find((item) => item.key === current)?.hint ??
-    (clean ? '汚れ・手書き寄りの跡を軽減しシャープに' : '')
+  const filterHint = UI_FILTER_OPTIONS.find((item) => item.key === current)?.hint ?? ''
+  const extraHint = flattenBook
+    ? '本の背付近のゆるい反りを広げ、中央の暗さも少し持ち上げます'
+    : clean
+      ? '紙の汚れ・ボールペン寄りの跡を抑え、文字をシャープにします'
+      : filterHint
 
   return (
     <div className="filter-toolbar compact">
@@ -35,20 +38,25 @@ export function FilterToolbar({
             {item.label}
           </button>
         ))}
-        <button type="button" className={clean ? 'chip active' : 'chip'} onClick={onToggleClean}>
-          Clean {clean ? 'ON' : 'OFF'}
+        <button
+          type="button"
+          className={clean ? 'chip active' : 'chip'}
+          onClick={onToggleClean}
+          aria-pressed={clean}
+        >
+          汚れ除去 {clean ? 'ON' : 'OFF'}
         </button>
         <button
           type="button"
           className={flattenBook ? 'chip active' : 'chip'}
           onClick={onToggleFlattenBook}
-          title="見開き本のゆるいカーブを補正"
+          aria-pressed={flattenBook}
+          title="本のゆるいカーブを補正"
         >
-          本カーブ {flattenBook ? 'ON' : 'OFF'}
+          本の反り {flattenBook ? 'ON' : 'OFF'}
         </button>
       </div>
-      {hint && <p className="filter-hint">{hint}</p>}
-      {flattenBook && <p className="filter-hint">本のゆるい反りを広げて読みやすくします</p>}
+      {extraHint && <p className="filter-hint">{extraHint}</p>}
     </div>
   )
 }

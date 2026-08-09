@@ -20,7 +20,7 @@ import { detectDocumentCorners } from './utils/corners'
 import { cancelHighResStitch, stitchHighResAdaptive } from './utils/highResWorkerClient'
 import { RENDER_MAX, renderScanPage } from './utils/image'
 import { collectPageTexts, recognizePage } from './utils/ocr'
-import { freshCorners, splitDataUrlVertically } from './utils/pageSplit'
+import { splitDataUrlVertically } from './utils/pageSplit'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
 import { sharePagesWithGpt } from './utils/share'
 import { downloadTextFile, downloadWordFile } from './utils/textExport'
@@ -421,39 +421,37 @@ export default function App() {
     const source = pagesRef.current[index]
     if (!source || index < 0) return
     setIsBusy(true)
-    setExportStatus('見開きを左右に分割しています…')
+    setExportStatus('見開きの背を検出して分割しています…')
     try {
-      const [leftUrl, rightUrl] = await splitDataUrlVertically(source.dataUrl)
-      const left: ScanPage = {
+      const split = await splitDataUrlVertically(source.dataUrl)
+      const [leftDetection, rightDetection] = await Promise.all([
+        detectDocumentCorners(split.leftDataUrl),
+        detectDocumentCorners(split.rightDataUrl)
+      ])
+
+      const makeHalf = (
+        dataUrl: string,
+        suffix: string,
+        detection: Awaited<ReturnType<typeof detectDocumentCorners>>
+      ): ScanPage => ({
         ...source,
         id: crypto.randomUUID(),
-        name: `${source.name}-左`,
-        dataUrl: leftUrl,
-        corners: freshCorners(),
-        cornerDetection: 'fallback',
-        cornerConfidence: undefined,
+        name: `${source.name}-${suffix}`,
+        dataUrl,
+        corners: detection.corners,
+        cornerDetection: detection.detected ? 'auto' : 'fallback',
+        cornerConfidence: detection.confidence,
         ocrText: undefined,
         ocrStatus: 'idle',
         ocrError: undefined,
         translationText: undefined,
         translationStatus: 'idle',
         translationError: undefined
-      }
-      const right: ScanPage = {
-        ...source,
-        id: crypto.randomUUID(),
-        name: `${source.name}-右`,
-        dataUrl: rightUrl,
-        corners: freshCorners(),
-        cornerDetection: 'fallback',
-        cornerConfidence: undefined,
-        ocrText: undefined,
-        ocrStatus: 'idle',
-        ocrError: undefined,
-        translationText: undefined,
-        translationStatus: 'idle',
-        translationError: undefined
-      }
+      })
+
+      const left = makeHalf(split.leftDataUrl, '左', leftDetection)
+      const right = makeHalf(split.rightDataUrl, '右', rightDetection)
+
       try {
         URL.revokeObjectURL(source.dataUrl)
       } catch {
@@ -465,7 +463,7 @@ export default function App() {
         return next
       })
       setSelectedPageId(left.id)
-      setExportStatus('左右に分割しました')
+      setExportStatus('左右に分割しました（背位置を自動検出）')
     } catch (error) {
       console.error(error)
       setExportStatus('分割に失敗しました')
@@ -726,6 +724,7 @@ export default function App() {
             updatePageImage(selectedPage.id, (page) => ({ ...page, flattenBook: !page.flattenBook }))
           }
           onRotate={(delta) => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + delta }))}
+          onSplitPage={() => void splitPage(selectedPage.id)}
           onOpenTextRecognition={() => {
             setEditTool('ocr')
             setTextSheetOpen(true)

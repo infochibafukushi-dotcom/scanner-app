@@ -141,7 +141,7 @@ export function GalleryView({
               setMenuPageId(null)
             }}
           >
-            左右に分割（見開き）
+            左右に分割（背を自動検出）
           </button>
           <button
             type="button"

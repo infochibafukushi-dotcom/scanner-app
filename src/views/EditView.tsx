@@ -22,6 +22,7 @@ type Props = {
   onToggleClean: () => void
   onToggleFlattenBook: () => void
   onRotate: (delta: number) => void
+  onSplitPage: () => void
   onOpenTextRecognition: () => void
 }
 
@@ -41,6 +42,7 @@ export function EditView({
   onToggleClean,
   onToggleFlattenBook,
   onRotate,
+  onSplitPage,
   onOpenTextRecognition
 }: Props) {
   const [paperOpen, setPaperOpen] = useState(false)
@@ -105,6 +107,9 @@ export function EditView({
                 onClick={() => setPaperOpen((value) => !value)}
               >
                 用紙:{paperLabel}
+              </button>
+              <button type="button" className="chip" onClick={onSplitPage}>
+                左右分割
               </button>
             </div>
             {paperOpen && (

@@ -419,6 +419,9 @@
   display: flex;
   gap: 8px;
   align-items: center;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
 }
 
 .crop-controls-row .chip {
