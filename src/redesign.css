@@ -15,6 +15,18 @@
   padding: 0;
 }
 
+.redesign-shell.mode-boot {
+  display: grid;
+  place-items: center;
+  background: #071914;
+}
+
+.boot-splash {
+  color: rgba(226, 232, 240, 0.75);
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+
 /* Camera */
 .camera-view-screen {
   position: fixed;

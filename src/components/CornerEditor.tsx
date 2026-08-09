@@ -64,7 +64,8 @@ const placeLoupe = (
 
   let y = clientY - size - gap
   if (y < topSafe) y = clientY + gap
-  y = clamp(y, topSafe, viewportHeight - size - bottomSafe)
+  const maxY = Math.max(topSafe, viewportHeight - size - bottomSafe)
+  y = clamp(y, topSafe, maxY)
 
   return { x, y, size, point }
 }
@@ -251,10 +252,14 @@ export function CornerEditor({
     if (!container) return
     const rect = container.getBoundingClientRect()
     const view = viewportRef.current
+    const width = Math.max(1, rect.width * Math.max(0.01, view.scale))
+    const height = Math.max(1, rect.height * Math.max(0.01, view.scale))
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return
     const point = {
-      x: clamp((clientX - rect.left - view.x) / (rect.width * view.scale), 0, 1),
-      y: clamp((clientY - rect.top - view.y) / (rect.height * view.scale), 0, 1)
+      x: clamp((clientX - rect.left - view.x) / width, 0, 1),
+      y: clamp((clientY - rect.top - view.y) / height, 0, 1)
     }
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return
     const next = [...corners] as [Point, Point, Point, Point]
     next[index] = point
     onChange(next)

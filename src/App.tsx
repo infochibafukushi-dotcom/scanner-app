@@ -559,7 +559,13 @@ export default function App() {
   }
 
   if (!hydrated) {
-    return <div className="app-shell redesign-shell mode-boot" aria-busy="true" />
+    return (
+      <div className="app-shell redesign-shell mode-boot" aria-busy="true">
+        <div className="boot-splash" role="status">
+          読み込み中…
+        </div>
+      </div>
+    )
   }
 
   if (showOnboarding && pages.length === 0) {
@@ -679,7 +685,10 @@ export default function App() {
           busy={panelBusy}
           statusMessage={pageOcrStatus}
           gptFallbackVisible={gptFallbackVisible}
-          onClose={() => setTextSheetOpen(false)}
+          onClose={() => {
+            setTextSheetOpen(false)
+            setEditTool((current) => (current === 'ocr' ? 'crop' : current))
+          }}
           onTextChange={(text) =>
             updatePage(selectedPage.id, (page) => ({
               ...page,

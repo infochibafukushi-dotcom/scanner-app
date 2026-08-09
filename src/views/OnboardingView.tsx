@@ -41,57 +41,101 @@ const SLIDES = [
   }
 ] as const
 
-const SWIPE_THRESHOLD = 48
+const SWIPE_THRESHOLD = 56
 
 export function OnboardingView({ onComplete }: Props) {
   const [index, setIndex] = useState(0)
-  const pointerStartX = useRef<number | null>(null)
-  const dragging = useRef(false)
+  const [swiping, setSwiping] = useState(false)
+  const indexRef = useRef(0)
+  const swipingRef = useRef(false)
+  const pointerStart = useRef<{ x: number; y: number } | null>(null)
+  const trapActiveRef = useRef(true)
   const isLast = index >= SLIDES.length - 1
 
+  useEffect(() => {
+    indexRef.current = index
+  }, [index])
+
   const finish = () => {
+    trapActiveRef.current = false
     markOnboardingComplete()
+    // Drop the history trap entry so Back from Camera doesn't resurrect onboarding.
+    if (window.history.state && (window.history.state as { scannerOnboarding?: boolean }).scannerOnboarding) {
+      window.history.replaceState(null, '')
+    }
     onComplete()
   }
 
   const goNext = () => {
-    if (isLast) finish()
-    else setIndex((value) => Math.min(SLIDES.length - 1, value + 1))
+    setIndex((value) => Math.min(SLIDES.length - 1, value + 1))
   }
 
   const goPrev = () => setIndex((value) => Math.max(0, value - 1))
 
   useEffect(() => {
-    const state = { scannerOnboarding: true, index }
-    window.history.pushState(state, '')
+    trapActiveRef.current = true
+    window.history.pushState({ scannerOnboarding: true }, '')
+
     const onPopState = () => {
-      setIndex((current) => {
-        if (current > 0) {
-          window.history.pushState({ scannerOnboarding: true, index: current - 1 }, '')
-          return current - 1
-        }
-        window.history.pushState({ scannerOnboarding: true, index: 0 }, '')
-        return 0
-      })
+      if (!trapActiveRef.current) return
+      const current = indexRef.current
+      if (current > 0) {
+        indexRef.current = current - 1
+        setIndex(current - 1)
+      }
+      // Re-arm trap so the next system Back stays inside onboarding.
+      window.history.pushState({ scannerOnboarding: true }, '')
     }
+
     window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
+    return () => {
+      trapActiveRef.current = false
+      window.removeEventListener('popstate', onPopState)
+    }
   }, [])
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    pointerStartX.current = event.clientX
-    dragging.current = true
-    event.currentTarget.setPointerCapture(event.pointerId)
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    pointerStart.current = { x: event.clientX, y: event.clientY }
+    swipingRef.current = false
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // ignore
+    }
+  }
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = pointerStart.current
+    if (!start || swipingRef.current) return
+    const dx = event.clientX - start.x
+    const dy = event.clientY - start.y
+    if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      swipingRef.current = true
+      setSwiping(true)
+    }
   }
 
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragging.current || pointerStartX.current == null) return
-    const delta = event.clientX - pointerStartX.current
-    pointerStartX.current = null
-    dragging.current = false
-    if (Math.abs(delta) < SWIPE_THRESHOLD) return
-    if (delta < 0) goNext()
-    else goPrev()
+    const start = pointerStart.current
+    const wasSwiping = swipingRef.current
+    pointerStart.current = null
+    swipingRef.current = false
+    setSwiping(false)
+    if (!start) return
+
+    const dx = event.clientX - start.x
+    const dy = event.clientY - start.y
+    if (Math.abs(dx) < SWIPE_THRESHOLD) return
+    // Prefer horizontal intent; ignore mostly-vertical gestures.
+    if (Math.abs(dx) < Math.abs(dy) * 1.15 && !wasSwiping) return
+
+    if (dx < 0) {
+      // Never auto-finish from swipe on the last page — CTA only.
+      if (indexRef.current < SLIDES.length - 1) goNext()
+    } else {
+      goPrev()
+    }
   }
 
   return (
@@ -112,10 +156,11 @@ export function OnboardingView({ onComplete }: Props) {
       <div
         className="onboarding-track-wrap"
         onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={() => {
-          pointerStartX.current = null
-          dragging.current = false
+          pointerStart.current = null
+          setSwiping(false)
         }}
       >
         <div className="onboarding-track" style={{ transform: `translateX(-${index * 100}%)` }}>
@@ -126,7 +171,7 @@ export function OnboardingView({ onComplete }: Props) {
                 afterSrc={slide.after}
                 beforeAlt={slide.beforeAlt}
                 afterAlt={slide.afterAlt}
-                active={slideIndex === index}
+                active={slideIndex === index && !swiping}
               />
             </OnboardingSlide>
           ))}
@@ -148,7 +193,14 @@ export function OnboardingView({ onComplete }: Props) {
           ))}
         </div>
 
-        <button type="button" className="onboarding-cta" onClick={goNext}>
+        <button
+          type="button"
+          className="onboarding-cta"
+          onClick={() => {
+            if (isLast) finish()
+            else goNext()
+          }}
+        >
           {isLast ? 'スキャンを始める' : '続ける'}
         </button>
       </div>

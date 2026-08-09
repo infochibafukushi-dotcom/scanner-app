@@ -52,11 +52,13 @@ export function EditView({
       return
     }
     setPaperOpen(false)
-    onToolChange(tool)
+    onToolChange(tool === 'enhance' ? 'crop' : tool)
   }
 
+  const stageTool = activeTool === 'ocr' ? 'crop' : activeTool
+
   return (
-    <div className={`edit-view tool-${activeTool}`}>
+    <div className={`edit-view tool-${activeTool === 'ocr' ? 'crop' : activeTool}`}>
       <header className="edit-view-header">
         <button type="button" className="text-button" onClick={onBack} aria-label="戻る">
           ←
@@ -71,7 +73,7 @@ export function EditView({
 
       <main className="edit-view-main">
         <div className="edit-stage">
-          {activeTool === 'crop' ? (
+          {stageTool === 'crop' ? (
             <CornerEditor
               imageUrl={page.dataUrl}
               filter={pageFilter}
@@ -89,7 +91,7 @@ export function EditView({
           )}
         </div>
 
-        {activeTool === 'crop' && (
+        {stageTool === 'crop' && (
           <div className="crop-controls">
             <div className="crop-controls-row">
               <button type="button" className="chip" onClick={onRedetect} disabled={detecting}>
@@ -120,7 +122,7 @@ export function EditView({
           </div>
         )}
 
-        {activeTool === 'filter' && (
+        {stageTool === 'filter' && (
           <FilterToolbar
             filter={pageFilter}
             clean={page.clean}
@@ -129,7 +131,7 @@ export function EditView({
           />
         )}
 
-        {activeTool === 'rotate' && (
+        {stageTool === 'rotate' && (
           <div className="rotate-toolbar">
             <button type="button" className="chip" onClick={() => onRotate(-90)}>
               左90°
@@ -141,7 +143,7 @@ export function EditView({
         )}
       </main>
 
-      <EditToolbar value={activeTool} onChange={handleTool} />
+      <EditToolbar value={activeTool === 'ocr' ? 'ocr' : stageTool} onChange={handleTool} />
     </div>
   )
 }
