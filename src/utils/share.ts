@@ -1,5 +1,5 @@
 import type { ScanPage } from '../types'
-import { renderScanPage } from './image'
+import { RENDER_MAX, renderScanPage } from './image'
 
 export const isAbortError = (error: unknown) =>
   Boolean(error && typeof error === 'object' && 'name' in error && (error as { name: string }).name === 'AbortError')
@@ -60,7 +60,7 @@ const canvasToJpegFile = (canvas: HTMLCanvasElement, fileName: string, quality =
 export const buildCorrectedImageFiles = async (pages: ScanPage[]) =>
   Promise.all(
     pages.map(async (page, index) => {
-      const canvas = await renderScanPage(page, 1800)
+      const canvas = await renderScanPage(page, RENDER_MAX.export)
       return canvasToJpegFile(canvas, `scan-page-${index + 1}.jpg`)
     })
   )

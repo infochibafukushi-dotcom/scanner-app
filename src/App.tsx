@@ -9,7 +9,7 @@ import { PreviewModal } from './components/PreviewModal'
 import { TranslationPanel } from './components/TranslationPanel'
 import { invalidateOcrForImageChange, type AppTab, type FilterMode, type HighResTileId, type ScanPage } from './types'
 import { detectDocumentCorners } from './utils/corners'
-import { renderScanPage } from './utils/image'
+import { RENDER_MAX, renderScanPage } from './utils/image'
 import { collectPageTexts, recognizePage } from './utils/ocr'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
 import { sharePagesWithGpt } from './utils/share'
@@ -155,8 +155,8 @@ export default function App() {
     setIsBusy(true)
     try {
       await Promise.all(pages.map(async (page, index) => {
-        const canvas = await renderScanPage(page)
-        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.94))
+        const canvas = await renderScanPage(page, RENDER_MAX.export)
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.96))
         if (!blob) throw new Error('JPEGを作成できませんでした。')
         downloadBlob(blob, `${fileName.replace(/\.pdf$/i, '')}-${index + 1}.jpg`)
       }))

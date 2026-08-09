@@ -154,8 +154,8 @@ export async function stitchHighRes(params: {
     if (failedTiles.length) return { ok: false, message: `${failedTiles.map((id) => HIGH_RES_LABELS[id]).join('・')}の位置合わせができませんでした。書類との距離を保ち、前の撮影範囲を少し多めに含めて撮り直してください。`, failedTiles, retakeHint: '基準画像と30〜40%重ね、文字が見える状態で近づけて撮影してください。' }
 
     progress('高解像度画像を合成中', 5, 6)
-    const [base, ...tiles] = await Promise.all([params.baseDataUrl, ...tileIds.map((id) => params.tiles[id])].map((url) => toCanvas(url, 2800)))
-    const outputScale = Math.min(1, 2600 / Math.max(base.canvas.width / base.scale, base.canvas.height / base.scale))
+    const [base, ...tiles] = await Promise.all([params.baseDataUrl, ...tileIds.map((id) => params.tiles[id])].map((url) => toCanvas(url, 4200)))
+    const outputScale = Math.min(1, 4000 / Math.max(base.canvas.width / base.scale, base.canvas.height / base.scale))
     const output = document.createElement('canvas')
     output.width = Math.max(1, Math.round(base.canvas.width / base.scale * outputScale))
     output.height = Math.max(1, Math.round(base.canvas.height / base.scale * outputScale))
@@ -211,7 +211,7 @@ export async function stitchHighRes(params: {
     outputContext.putImageData(result, 0, 0)
     const inspection = inspectStitchQuality(result)
     progress('完了', 6, 6)
-    return { ok: true, dataUrl: output.toDataURL('image/jpeg', 0.94), width: output.width, height: output.height, warnings: inspection.issues, qualityNotes: ['タイル境界は最も近い詳細画像を優先して合成しました。'] }
+    return { ok: true, dataUrl: output.toDataURL('image/jpeg', 0.97), width: output.width, height: output.height, warnings: inspection.issues, qualityNotes: ['タイル境界は最も近い詳細画像を優先して合成しました。'] }
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : '高解像度合成に失敗しました。', failedTiles: tileIds, retakeHint: '通常スキャンとして保存するか、撮影をやり直してください。' }
   }

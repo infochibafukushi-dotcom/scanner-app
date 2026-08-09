@@ -1,5 +1,5 @@
 import type { ScanPage } from '../types'
-import { renderScanPage } from './image'
+import { RENDER_MAX, renderScanPage } from './image'
 
 type OcrProgressHandler = (message: string, progress: number) => void
 type MissingOcrProgressHandler = (current: number, total: number, pageNumber: number) => void
@@ -30,7 +30,7 @@ export const getPageOcrText = (page: ScanPage) =>
 
 const recognizeCanvas = async (page: ScanPage) => {
   const worker = await getWorker()
-  const canvas = await renderScanPage(page, 1800)
+  const canvas = await renderScanPage(page, RENDER_MAX.ocr)
   const source = canvas.toDataURL('image/png')
   const result = await worker.recognize(source)
   return result.data.text.trim()

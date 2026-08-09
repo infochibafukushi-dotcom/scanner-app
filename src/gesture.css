@@ -78,10 +78,14 @@
   border: 2px solid #7dd3fc;
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(0,0,0,.45);
-  background-repeat: no-repeat;
-  background-color: #020617;
+  background: #020617;
   pointer-events: none;
   overflow: hidden;
+}
+.corner-loupe-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .corner-loupe-crosshair {
   position: absolute;
@@ -94,4 +98,5 @@
   background: #0ea5e9;
   transform: translate(-50%, -50%);
   box-shadow: 0 0 0 1px rgba(2,6,23,.4);
+  pointer-events: none;
 }

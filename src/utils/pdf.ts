@@ -1,13 +1,13 @@
 import { jsPDF } from 'jspdf'
 import type { ScanPage } from '../types'
-import { renderScanPage } from './image'
+import { RENDER_MAX, renderScanPage } from './image'
 
 export const buildPdfBlob = async (pages: ScanPage[]) => {
   const pdf = new jsPDF({ unit: 'pt', format: 'a4', compress: true })
 
   for (let index = 0; index < pages.length; index += 1) {
-    const canvas = await renderScanPage(pages[index])
-    const imageData = canvas.toDataURL('image/jpeg', 0.92)
+    const canvas = await renderScanPage(pages[index], RENDER_MAX.export)
+    const imageData = canvas.toDataURL('image/jpeg', 0.95)
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
     const ratio = Math.min(pageWidth / canvas.width, pageHeight / canvas.height)

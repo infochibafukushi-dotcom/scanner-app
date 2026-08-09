@@ -1,11 +1,29 @@
 import type { FilterMode, Point, ScanPage } from '../types'
 
+/** Purpose-specific max side lengths to balance quality and mobile memory. */
+export const RENDER_MAX = {
+  preview: 1800,
+  editor: 2400,
+  ocr: 2400,
+  export: 3400,
+  highRes: 4000
+} as const
+
 export const defaultCorners = (): [Point, Point, Point, Point] => [
   { x: 0.05, y: 0.05 },
   { x: 0.95, y: 0.05 },
   { x: 0.95, y: 0.95 },
   { x: 0.05, y: 0.95 }
 ]
+
+const enableHighQuality = (ctx: CanvasRenderingContext2D) => {
+  ctx.imageSmoothingEnabled = true
+  try {
+    ctx.imageSmoothingQuality = 'high'
+  } catch {
+    // Older browsers may omit imageSmoothingQuality.
+  }
+}
 
 export const loadImage = (src: string) =>
   new Promise<HTMLImageElement>((resolve, reject) => {
@@ -170,19 +188,61 @@ const applyClean = (ctx: CanvasRenderingContext2D, width: number, height: number
     for (let x = 1; x < width - 1; x += 1) {
       const index = (y * width + x) * 4
       const value = grayscale(original[index], original[index + 1], original[index + 2])
-      const offsets = [((y - 1) * width + x) * 4, ((y + 1) * width + x) * 4, (y * width + x - 1) * 4, (y * width + x + 1) * 4]
+      const offsets = [
+        ((y - 1) * width + x) * 4,
+        ((y + 1) * width + x) * 4,
+        (y * width + x - 1) * 4,
+        (y * width + x + 1) * 4,
+        ((y - 1) * width + x - 1) * 4,
+        ((y - 1) * width + x + 1) * 4,
+        ((y + 1) * width + x - 1) * 4,
+        ((y + 1) * width + x + 1) * 4
+      ]
       const neighbors = offsets.map((offset) => grayscale(original[offset], original[offset + 1], original[offset + 2]))
       const minimum = Math.min(...neighbors)
       const average = neighbors.reduce((sum, neighbor) => sum + neighbor, 0) / neighbors.length
-      // Restrict changes to weak, isolated artifacts in bright paper areas.
-      if (value >= 105 && minimum > 215 && average - value > 32) {
-        const mix = value < 175 ? 0.78 : 0.42
-        for (let channel = 0; channel < 3; channel += 1) data[index + channel] = Math.round(original[index + channel] * (1 - mix) + average * mix)
-      } else if (value >= 175 && minimum > 225 && average - value > 14) {
-        for (let channel = 0; channel < 3; channel += 1) data[index + channel] = Math.round(original[index + channel] * 0.8 + average * 0.2)
+      const brightNeighbors = neighbors.filter((neighbor) => neighbor > 228).length
+      // Only lift tiny isolated speckles on bright paper; leave fine text/lines alone.
+      if (value >= 140 && minimum > 228 && average - value > 45 && brightNeighbors >= 7) {
+        const mix = 0.55
+        for (let channel = 0; channel < 3; channel += 1) {
+          data[index + channel] = Math.round(original[index + channel] * (1 - mix) + average * mix)
+        }
+      } else if (value >= 190 && minimum > 232 && average - value > 18 && brightNeighbors >= 7) {
+        for (let channel = 0; channel < 3; channel += 1) {
+          data[index + channel] = Math.round(original[index + channel] * 0.85 + average * 0.15)
+        }
       }
     }
   }
+  ctx.putImageData(imageData, 0, 0)
+}
+
+/** Mild unsharp mask — strengthens edges slightly without visible halos. */
+const applyMildUnsharp = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+  const imageData = ctx.getImageData(0, 0, width, height)
+  const { data } = imageData
+  const source = new Uint8ClampedArray(data)
+  const amount = 0.22
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = (y * width + x) * 4
+      for (let channel = 0; channel < 3; channel += 1) {
+        const center = source[index + channel]
+        const blur =
+          (source[((y - 1) * width + x) * 4 + channel] +
+            source[((y + 1) * width + x) * 4 + channel] +
+            source[(y * width + x - 1) * 4 + channel] +
+            source[(y * width + x + 1) * 4 + channel] +
+            center * 4) /
+          8
+        const sharpened = center + amount * (center - blur)
+        data[index + channel] = Math.round(clamp(sharpened, 0, 255))
+      }
+    }
+  }
+
   ctx.putImageData(imageData, 0, 0)
 }
 
@@ -303,10 +363,47 @@ const computeHomography = (destination: Point[], source: Point[]) => {
   return [...h, 1]
 }
 
+const sampleBilinear = (
+  src: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x: number,
+  y: number
+) => {
+  if (x < 0 || y < 0 || x > width - 1 || y > height - 1) {
+    const sx = clamp(Math.round(x), 0, width - 1)
+    const sy = clamp(Math.round(y), 0, height - 1)
+    const index = (sy * width + sx) * 4
+    return [src[index], src[index + 1], src[index + 2]] as const
+  }
+
+  const x0 = Math.floor(x)
+  const y0 = Math.floor(y)
+  const x1 = Math.min(width - 1, x0 + 1)
+  const y1 = Math.min(height - 1, y0 + 1)
+  const dx = x - x0
+  const dy = y - y0
+  const invDx = 1 - dx
+  const invDy = 1 - dy
+
+  const i00 = (y0 * width + x0) * 4
+  const i10 = (y0 * width + x1) * 4
+  const i01 = (y1 * width + x0) * 4
+  const i11 = (y1 * width + x1) * 4
+
+  const mix = (c: number) =>
+    src[i00 + c] * invDx * invDy +
+    src[i10 + c] * dx * invDy +
+    src[i01 + c] * invDx * dy +
+    src[i11 + c] * dx * dy
+
+  return [mix(0), mix(1), mix(2)] as const
+}
+
 const warpPerspective = (
   sourceCanvas: HTMLCanvasElement,
   corners: [Point, Point, Point, Point],
-  maxSide = 1600
+  maxSide: number = RENDER_MAX.export
 ) => {
   const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true })
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
@@ -342,19 +439,19 @@ const warpPerspective = (
   const outputData = outputCtx.createImageData(outputWidth, outputHeight)
   const src = sourceData.data
   const dst = outputData.data
+  const sourceWidth = sourceCanvas.width
+  const sourceHeight = sourceCanvas.height
 
   for (let y = 0; y < outputHeight; y += 1) {
     for (let x = 0; x < outputWidth; x += 1) {
       const denominator = homography[6] * x + homography[7] * y + homography[8]
       const sourceX = (homography[0] * x + homography[1] * y + homography[2]) / denominator
       const sourceY = (homography[3] * x + homography[4] * y + homography[5]) / denominator
-      const sx = Math.max(0, Math.min(sourceCanvas.width - 1, Math.round(sourceX)))
-      const sy = Math.max(0, Math.min(sourceCanvas.height - 1, Math.round(sourceY)))
-      const sourceIndex = (sy * sourceCanvas.width + sx) * 4
+      const [r, g, b] = sampleBilinear(src, sourceWidth, sourceHeight, sourceX, sourceY)
       const outputIndex = (y * outputWidth + x) * 4
-      dst[outputIndex] = src[sourceIndex]
-      dst[outputIndex + 1] = src[sourceIndex + 1]
-      dst[outputIndex + 2] = src[sourceIndex + 2]
+      dst[outputIndex] = r
+      dst[outputIndex + 1] = g
+      dst[outputIndex + 2] = b
       dst[outputIndex + 3] = 255
     }
   }
@@ -371,7 +468,7 @@ const normalizeRotation = (rotation: number) => {
 export const renderEditorImage = async (
   dataUrl: string,
   filter: FilterMode,
-  maxSide = 1400,
+  maxSide: number = RENDER_MAX.editor,
   clean = false
 ): Promise<HTMLCanvasElement> => {
   const sourceImage = await loadImage(dataUrl)
@@ -381,19 +478,24 @@ export const renderEditorImage = async (
   canvas.height = Math.max(1, Math.round(sourceImage.height * scale))
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Canvas context could not be created.')
+  enableHighQuality(ctx)
   ctx.drawImage(sourceImage, 0, 0, canvas.width, canvas.height)
   if (clean) applyClean(ctx, canvas.width, canvas.height)
   applyFilter(ctx, filter, canvas.width, canvas.height)
   return canvas
 }
 
-export const renderScanPage = async (page: ScanPage, maxSide = 1600): Promise<HTMLCanvasElement> => {
+export const renderScanPage = async (
+  page: ScanPage,
+  maxSide: number = RENDER_MAX.preview
+): Promise<HTMLCanvasElement> => {
   const sourceImage = await loadImage(page.dataUrl)
   const sourceCanvas = document.createElement('canvas')
   sourceCanvas.width = sourceImage.width
   sourceCanvas.height = sourceImage.height
   const sourceCtx = sourceCanvas.getContext('2d')
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
+  enableHighQuality(sourceCtx)
   sourceCtx.drawImage(sourceImage, 0, 0)
 
   const correctedCanvas = warpPerspective(sourceCanvas, page.corners, maxSide)
@@ -402,6 +504,7 @@ export const renderScanPage = async (page: ScanPage, maxSide = 1600): Promise<HT
   enhanceDocument(correctedCtx, correctedCanvas.width, correctedCanvas.height)
   if (page.clean) applyClean(correctedCtx, correctedCanvas.width, correctedCanvas.height)
   applyFilter(correctedCtx, page.filter, correctedCanvas.width, correctedCanvas.height)
+  if (page.filter !== 'bw') applyMildUnsharp(correctedCtx, correctedCanvas.width, correctedCanvas.height)
 
   const rotation = normalizeRotation(page.rotation)
   if (rotation === 0) return correctedCanvas
@@ -414,6 +517,7 @@ export const renderScanPage = async (page: ScanPage, maxSide = 1600): Promise<HT
   rotatedCanvas.width = isQuarterTurn ? correctedCanvas.height : correctedCanvas.width
   rotatedCanvas.height = isQuarterTurn ? correctedCanvas.width : correctedCanvas.height
 
+  enableHighQuality(rotatedCtx)
   rotatedCtx.translate(rotatedCanvas.width / 2, rotatedCanvas.height / 2)
   rotatedCtx.rotate((rotation * Math.PI) / 180)
   rotatedCtx.drawImage(correctedCanvas, -correctedCanvas.width / 2, -correctedCanvas.height / 2)

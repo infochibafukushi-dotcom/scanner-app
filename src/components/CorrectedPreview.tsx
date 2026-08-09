@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ScanPage } from '../types'
-import { renderScanPage } from '../utils/image'
+import { RENDER_MAX, renderScanPage } from '../utils/image'
 
 type CorrectedPreviewProps = {
   page: ScanPage
@@ -10,17 +10,27 @@ export function CorrectedPreview({ page }: CorrectedPreviewProps) {
   const [imageUrl, setImageUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const imageKey = `${page.id}:${page.dataUrl.length}:${page.rotation}:${page.filter}:${JSON.stringify(page.corners)}`
+  const imageKey = `${page.id}:${page.dataUrl.length}:${page.rotation}:${page.filter}:${page.clean}:${JSON.stringify(page.corners)}`
 
   useEffect(() => {
     let cancelled = false
+    let objectUrl = ''
     const timer = window.setTimeout(() => {
       setLoading(true)
       setError('')
 
-      renderScanPage(page, 900)
+      renderScanPage(page, RENDER_MAX.preview)
         .then((canvas) => {
-          if (!cancelled) setImageUrl(canvas.toDataURL('image/jpeg', 0.88))
+          if (cancelled) return
+          canvas.toBlob(
+            (blob) => {
+              if (cancelled || !blob) return
+              objectUrl = URL.createObjectURL(blob)
+              setImageUrl(objectUrl)
+            },
+            'image/jpeg',
+            0.94
+          )
         })
         .catch((previewError) => {
           console.error(previewError)
@@ -34,6 +44,7 @@ export function CorrectedPreview({ page }: CorrectedPreviewProps) {
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
     // page 全体ではなく imageKey で監視し、OCR/翻訳更新での再描画を避ける
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ScanPage } from '../types'
-import { renderScanPage } from '../utils/image'
+import { RENDER_MAX, renderScanPage } from '../utils/image'
 import '../preview.css'
 
 type PreviewIntent = 'preview' | 'save' | 'share' | 'text' | 'word'
@@ -45,8 +45,8 @@ export function PreviewModal({
 
     Promise.all(
       pages.map(async (page) => {
-        const canvas = await renderScanPage(page)
-        return canvas.toDataURL('image/jpeg', 0.88)
+        const canvas = await renderScanPage(page, RENDER_MAX.preview)
+        return canvas.toDataURL('image/jpeg', 0.94)
       })
     )
       .then((next) => {
