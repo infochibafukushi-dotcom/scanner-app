@@ -6,6 +6,7 @@
  */
 
 import type { BookFlattenMode } from '../types'
+import { detectSpineFromRgba } from './spineDetect'
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
@@ -46,36 +47,8 @@ export const normalizeBookFlatten = (value: unknown): BookFlattenMode => {
 }
 
 /** Darkest vertical gutter + confidence that it is a real spine. */
-export const detectSpineWithConfidence = (data: Uint8ClampedArray, width: number, height: number) => {
-  const start = Math.floor(width * 0.28)
-  const end = Math.ceil(width * 0.72)
-  const stepY = Math.max(1, Math.floor(height / 96))
-  const scores: { x: number; mean: number }[] = []
-
-  for (let x = start; x <= end; x += 1) {
-    let sum = 0
-    let count = 0
-    for (let y = 0; y < height; y += stepY) {
-      sum += grayAt(data, width, x, y)
-      count += 1
-    }
-    scores.push({ x, mean: sum / Math.max(1, count) })
-  }
-
-  scores.sort((a, b) => a.mean - b.mean)
-  const best = scores[0] ?? { x: Math.floor(width / 2), mean: 128 }
-  const second = scores[1] ?? best
-  const median = scores[Math.floor(scores.length / 2)]?.mean ?? best.mean
-  const contrast = clamp((median - best.mean) / 64, 0, 1)
-  const margin = clamp((second.mean - best.mean) / 28, 0, 1)
-  const centerBias = 1 - Math.min(1, Math.abs(best.x - width / 2) / (width * 0.28))
-  const confidence = clamp(contrast * 0.55 + margin * 0.3 + centerBias * 0.15, 0, 1)
-
-  return {
-    spineX: clamp(best.x, 1, width - 2),
-    confidence
-  }
-}
+export const detectSpineWithConfidence = (data: Uint8ClampedArray, width: number, height: number) =>
+  detectSpineFromRgba(data, width, height)
 
 /** @deprecated Prefer detectSpineWithConfidence */
 export const detectSpineX = (data: Uint8ClampedArray, width: number, height: number) =>

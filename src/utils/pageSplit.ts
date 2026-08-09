@@ -1,10 +1,14 @@
 import { defaultCorners } from './image'
+import { detectSpineFromSampler, SPINE_SPLIT_AUTO_CONFIDENCE } from './spineDetect'
+
+export { SPINE_SPLIT_AUTO_CONFIDENCE }
 
 export type SpineSplitResult = {
   leftDataUrl: string
   rightDataUrl: string
   spineX: number
   width: number
+  confidence: number
 }
 
 /**
@@ -15,33 +19,13 @@ export const findSpineX = (
   width: number,
   height: number,
   sampleGray: (x: number, y: number) => number
-) => {
-  if (width < 8 || height < 8) return Math.floor(width / 2)
+) => detectSpineFromSampler(width, height, sampleGray).spineX
 
-  const start = Math.floor(width * 0.28)
-  const end = Math.ceil(width * 0.72)
-  const stepY = Math.max(1, Math.floor(height / 96))
-  let bestX = Math.floor(width / 2)
-  let bestScore = Number.POSITIVE_INFINITY
-
-  for (let x = start; x <= end; x += 1) {
-    let sum = 0
-    let count = 0
-    for (let y = 0; y < height; y += stepY) {
-      sum += sampleGray(x, y)
-      count += 1
-    }
-    // Prefer darker columns; slight bias toward image center for ties.
-    const centerBias = Math.abs(x - width / 2) / width
-    const score = sum / Math.max(1, count) + centerBias * 6
-    if (score < bestScore) {
-      bestScore = score
-      bestX = x
-    }
-  }
-
-  return clamp(bestX, 1, width - 1)
-}
+export const findSpineWithConfidence = (
+  width: number,
+  height: number,
+  sampleGray: (x: number, y: number) => number
+) => detectSpineFromSampler(width, height, sampleGray)
 
 /** Split a facing-page image into left/right pages using spine detection. */
 export const splitDataUrlVertically = async (dataUrl: string): Promise<SpineSplitResult> => {
@@ -56,9 +40,9 @@ export const splitDataUrlVertically = async (dataUrl: string): Promise<SpineSpli
   ctx.drawImage(image, 0, 0)
   const { data } = ctx.getImageData(0, 0, width, height)
 
-  const spineX = findSpineX(width, height, (x, y) => {
+  const { spineX, confidence } = findSpineWithConfidence(width, height, (x, y) => {
     const i = (y * width + x) * 4
-    return (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114)
+    return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114
   })
 
   // Small overlap avoidance: cut with a 1px gutter discard around the spine.
@@ -71,11 +55,10 @@ export const splitDataUrlVertically = async (dataUrl: string): Promise<SpineSpli
     leftDataUrl: cropCanvasToDataUrl(canvas, 0, 0, leftEnd, height),
     rightDataUrl: cropCanvasToDataUrl(canvas, rightStart, 0, rightWidth, height),
     spineX,
-    width
+    width,
+    confidence
   }
 }
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
 const loadImage = (src: string) =>
   new Promise<HTMLImageElement>((resolve, reject) => {

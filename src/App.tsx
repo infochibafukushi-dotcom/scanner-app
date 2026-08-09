@@ -18,6 +18,8 @@ import {
   type ScanPage,
   type ViewMode
 } from './types'
+import { createPagesFromBookCapture } from './utils/bookCapture'
+import { loadBookPageOrder } from './utils/bookPageOrderStorage'
 import { detectDocumentCorners } from './utils/corners'
 import { shouldAcceptRefinedCorners } from './utils/cornerRefine'
 import { getGalleryPlaceholder, prefetchGalleryThumb, seedGalleryPlaceholder } from './utils/galleryThumbs'
@@ -124,6 +126,8 @@ export default function App() {
   const [detectingId, setDetectingId] = useState<string | null>(null)
   const [quickThumbs, setQuickThumbs] = useState<Record<string, string>>({})
   const [cameraWarm, setCameraWarm] = useState(true)
+  const [captureProcessing, setCaptureProcessing] = useState(false)
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null)
   const [fileName, setFileName] = useState(initialFileName())
   const [exportStatus, setExportStatus] = useState('')
   const [pageOcrStatus, setPageOcrStatus] = useState('')
@@ -259,25 +263,64 @@ export default function App() {
     }
   }
 
+  const addDocumentCapture = async (
+    dataUrl: string,
+    liveDetection?: CornerDetectionResult | null
+  ) => {
+    const page = makePageOptimistic(dataUrl, `撮影-${pagesRef.current.length + 1}`, liveDetection)
+    appendPage(page)
+    setViewMode('camera')
+
+    void seedGalleryPlaceholder(page.id, dataUrl).then((url) => {
+      if (url) rememberQuickThumb(page.id, url)
+    })
+    prefetchGalleryThumb(page)
+    void refineCapturedCorners(page.id, dataUrl)
+  }
+
+  const addBookCapture = async (dataUrl: string) => {
+    setCaptureProcessing(true)
+    setViewMode('camera')
+    try {
+      const baseName = `本-${pagesRef.current.length + 1}`
+      const result = await createPagesFromBookCapture(dataUrl, baseName, loadBookPageOrder())
+      for (const page of result.pages) {
+        appendPage(page)
+        void seedGalleryPlaceholder(page.id, page.dataUrl).then((url) => {
+          if (url) rememberQuickThumb(page.id, url)
+        })
+        prefetchGalleryThumb(page)
+      }
+      if (result.kind === 'spread') {
+        setCaptureNotice(result.message)
+        window.setTimeout(() => setCaptureNotice(null), 4200)
+      }
+    } catch (error) {
+      console.error(error)
+      // Never lose the raw still if split/detection throws.
+      await addDocumentCapture(dataUrl, null)
+      setCaptureNotice('見開き処理に失敗したため、元画像を1ページとして保存しました')
+      window.setTimeout(() => setCaptureNotice(null), 4200)
+    } finally {
+      setCaptureProcessing(false)
+    }
+  }
+
   const addCapturedPage = async (payload: CapturePayload | string) => {
     const dataUrl = typeof payload === 'string' ? payload : payload.dataUrl
     const liveDetection = typeof payload === 'string' ? null : payload.liveDetection
+    const captureMode = typeof payload === 'string' ? 'document' : payload.captureMode
     if (replacePageId) {
       setPendingReplaceUrl(dataUrl)
       setViewMode('gallery')
       return
     }
 
-    const page = makePageOptimistic(dataUrl, `撮影-${pagesRef.current.length + 1}`, liveDetection)
-    appendPage(page)
-    setViewMode('camera')
-
-    // Seed a lightweight stack thumb while corrected gallery thumbs generate.
-    void seedGalleryPlaceholder(page.id, dataUrl).then((url) => {
-      if (url) rememberQuickThumb(page.id, url)
-    })
-    prefetchGalleryThumb(page)
-    void refineCapturedCorners(page.id, dataUrl)
+    if (captureMode === 'book') {
+      await addBookCapture(dataUrl)
+      return
+    }
+    await addDocumentCapture(dataUrl, liveDetection)
   }
 
   const finishCamera = () => {
@@ -771,6 +814,7 @@ export default function App() {
           pageCount={pages.length}
           latestThumbUrl={latestThumbUrl}
           mode={replacePageId ? 'replace' : 'append'}
+          captureProcessing={captureProcessing}
           onCapture={(payload) => void addCapturedPage(payload)}
           onClose={finishCamera}
           onOpenGallery={() => setViewMode('gallery')}
@@ -975,6 +1019,7 @@ export default function App() {
       )}
 
       {restoreMessage && <Toast message={restoreMessage} />}
+      {captureNotice && <Toast message={captureNotice} />}
       {undo && <Toast message={undo.message} actionLabel="元に戻す" onAction={undoDelete} />}
       {isBusy && !stitchProgress && (
         <div className="busy-dot" aria-live="polite">

@@ -1,12 +1,26 @@
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react'
-import type { CornerDetectionResult, Point } from '../types'
+import type { CaptureMode, CornerDetectionResult, Point } from '../types'
 import { captureStillDataUrl, openRearCamera } from '../utils/cameraCapture'
+import { loadAutoCapturePreference, saveAutoCapturePreference } from '../utils/autoCaptureStorage'
+import {
+  BOOK_PAGE_CHANGE_DELTA,
+  BOOK_PAGE_CHANGE_FRAMES,
+  bookPageDifference,
+  isBookPageChange,
+  nextBookChangeStreak,
+  shouldReArmBookPage
+} from '../utils/bookPageChange'
+import {
+  loadBookPageOrder,
+  saveBookPageOrder,
+  type BookPageOrder
+} from '../utils/bookPageOrderStorage'
+import { loadCaptureMode, saveCaptureMode } from '../utils/captureModeStorage'
 import {
   AUTO_CAPTURE_CONFIDENCE,
   AUTO_CAPTURE_STABLE_DELTA,
   AUTO_CAPTURE_STABLE_FRAMES
 } from '../utils/corners'
-import { loadAutoCapturePreference, saveAutoCapturePreference } from '../utils/autoCaptureStorage'
 import {
   detectLiveDocumentCorners,
   frameDifference,
@@ -18,6 +32,7 @@ import '../highres.css'
 export type CapturePayload = {
   dataUrl: string
   liveDetection?: CornerDetectionResult | null
+  captureMode: CaptureMode
 }
 
 type Props = {
@@ -25,6 +40,7 @@ type Props = {
   pageCount: number
   latestThumbUrl?: string | null
   mode?: 'append' | 'replace'
+  captureProcessing?: boolean
   onCapture: (payload: CapturePayload) => void
   onClose: () => void
   onOpenGallery: () => void
@@ -42,6 +58,7 @@ export function CameraView({
   pageCount,
   latestThumbUrl,
   mode = 'append',
+  captureProcessing = false,
   onCapture,
   onClose,
   onOpenGallery,
@@ -61,8 +78,12 @@ export function CameraView({
   const autoArmedRef = useRef(true)
   const missingSinceRef = useRef<number | null>(null)
   const lockedCornersRef = useRef<Point[] | null>(null)
+  const capturedBookFrameRef = useRef<ImageData | null>(null)
+  const bookChangeFramesRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
   const [autoCapture, setAutoCapture] = useState(() => loadAutoCapturePreference())
+  const [captureMode, setCaptureMode] = useState<CaptureMode>(() => loadCaptureMode())
+  const [bookPageOrder, setBookPageOrder] = useState<BookPageOrder>(() => loadBookPageOrder())
   const [torchSupported, setTorchSupported] = useState(false)
   const [torchOn, setTorchOn] = useState(false)
   const [corners, setCorners] = useState<Point[] | null>(null)
@@ -71,6 +92,8 @@ export function CameraView({
 
   const activeRef = useRef(active)
   activeRef.current = active
+  const captureModeRef = useRef(captureMode)
+  captureModeRef.current = captureMode
 
   // Keep MediaStream across gallery visits; stop only on unmount.
   useEffect(() => {
@@ -136,7 +159,9 @@ export function CameraView({
     lastCornersRef.current = null
     lastDetectionRef.current = null
     displayCornersRef.current = null
-    setHoldMessage('')
+    capturedBookFrameRef.current = null
+    bookChangeFramesRef.current = 0
+    setHoldMessage(captureModeRef.current === 'book' ? '背を中央付近に合わせてください' : '')
     setCorners(null)
   }, [active, mode])
 
@@ -146,7 +171,8 @@ export function CameraView({
     capturingRef.current = true
     try {
       const dataUrl = await captureStillDataUrl(trackRef.current, video, 'normal')
-      onCapture({ dataUrl, liveDetection: lastDetectionRef.current })
+      const effectiveMode: CaptureMode = mode === 'replace' ? 'document' : captureMode
+      onCapture({ dataUrl, liveDetection: lastDetectionRef.current, captureMode: effectiveMode })
       setFlash(true)
       window.setTimeout(() => setFlash(false), 100)
       if (autoCapture) {
@@ -154,7 +180,14 @@ export function CameraView({
         lockedCornersRef.current = lastCornersRef.current
         missingSinceRef.current = null
         stableFramesRef.current = 0
-        setHoldMessage('撮影しました\n次の書類を映してください')
+        bookChangeFramesRef.current = 0
+        if (captureMode === 'book' && mode !== 'replace') {
+          capturedBookFrameRef.current = readSmallVideoFrame(video, 64)
+          setHoldMessage('撮影しました\n次のページをめくってください')
+        } else {
+          capturedBookFrameRef.current = null
+          setHoldMessage('撮影しました\n次の書類を映してください')
+        }
       }
     } catch (captureError) {
       console.error(captureError)
@@ -163,7 +196,7 @@ export function CameraView({
         capturingRef.current = false
       }, 220)
     }
-  }, [autoCapture, onCapture])
+  }, [autoCapture, captureMode, mode, onCapture])
 
   useEffect(() => {
     if (!active) return
@@ -173,7 +206,7 @@ export function CameraView({
       if (!video || stopped) return
       const [result, frame] = await Promise.all([
         detectLiveDocumentCorners(video),
-        Promise.resolve(readSmallVideoFrame(video))
+        Promise.resolve(readSmallVideoFrame(video, captureMode === 'book' ? 64 : 96))
       ])
       if (stopped || !frame) return
       const motion = frameDifference(previousFrameRef.current, frame)
@@ -194,7 +227,11 @@ export function CameraView({
             autoArmedRef.current = true
             lockedCornersRef.current = null
             missingSinceRef.current = null
-            setHoldMessage('次の書類を枠内に合わせてください')
+            capturedBookFrameRef.current = null
+            bookChangeFramesRef.current = 0
+            setHoldMessage(
+              captureMode === 'book' ? '背を中央付近に合わせてください' : '次の書類を枠内に合わせてください'
+            )
           }
         }
         return
@@ -212,14 +249,29 @@ export function CameraView({
 
       if (!autoArmedRef.current) {
         const locked = lockedCornersRef.current
-        // Same-paper lock: require the sheet to leave frame or move corners a lot before re-arming.
-        // TODO: book capture mode needs content-diff based re-arm (page turns keep similar outer corners).
+        // Same-paper lock (document): require the sheet to leave frame or move corners a lot.
+        // Book mode ALSO re-arms on content change after a page turn.
         const movedAway = locked ? cornerDelta(locked, result.corners) > 0.18 : false
-        if (movedAway) {
+
+        let contentTurn = false
+        if (captureMode === 'book' && capturedBookFrameRef.current) {
+          const pageDiff = bookPageDifference(capturedBookFrameRef.current, frame)
+          const changed = isBookPageChange(pageDiff, BOOK_PAGE_CHANGE_DELTA)
+          bookChangeFramesRef.current = nextBookChangeStreak(bookChangeFramesRef.current, changed)
+          if (shouldReArmBookPage(bookChangeFramesRef.current, BOOK_PAGE_CHANGE_FRAMES)) {
+            contentTurn = true
+          }
+        }
+
+        if (movedAway || contentTurn) {
           autoArmedRef.current = true
           lockedCornersRef.current = null
           missingSinceRef.current = null
-          setHoldMessage('次の書類を枠内に合わせてください')
+          capturedBookFrameRef.current = null
+          bookChangeFramesRef.current = 0
+          setHoldMessage(
+            captureMode === 'book' ? 'そのまま保持してください' : '次の書類を枠内に合わせてください'
+          )
         } else {
           missingSinceRef.current = null
         }
@@ -229,7 +281,7 @@ export function CameraView({
       missingSinceRef.current = null
       if (!confident) {
         stableFramesRef.current = 0
-        setHoldMessage('四隅を確認してください')
+        setHoldMessage(captureMode === 'book' ? '背を中央付近に合わせてください' : '四隅を確認してください')
         return
       }
 
@@ -242,7 +294,9 @@ export function CameraView({
         setHoldMessage(
           stableFramesRef.current >= Math.max(2, AUTO_CAPTURE_STABLE_FRAMES - 1)
             ? 'そのまま保持してください'
-            : '書類を動かさないでください'
+            : captureMode === 'book'
+              ? '背を中央付近に合わせてください'
+              : '書類を動かさないでください'
         )
         if (stableFramesRef.current >= AUTO_CAPTURE_STABLE_FRAMES) {
           stableFramesRef.current = 0
@@ -250,7 +304,9 @@ export function CameraView({
         }
       } else {
         stableFramesRef.current = 0
-        setHoldMessage('書類を動かさないでください')
+        setHoldMessage(
+          captureMode === 'book' ? '背を中央付近に合わせてください' : '書類を動かさないでください'
+        )
       }
     }
 
@@ -261,7 +317,7 @@ export function CameraView({
       stopped = true
       window.clearInterval(interval)
     }
-  }, [active, autoCapture, capture])
+  }, [active, autoCapture, capture, captureMode])
 
   const toggleTorch = async () => {
     const track = trackRef.current ?? streamRef.current?.getVideoTracks()[0]
@@ -273,6 +329,16 @@ export function CameraView({
     } catch {
       setTorchSupported(false)
     }
+  }
+
+  const selectCaptureMode = (next: CaptureMode) => {
+    setCaptureMode(next)
+    saveCaptureMode(next)
+    capturedBookFrameRef.current = null
+    bookChangeFramesRef.current = 0
+    autoArmedRef.current = true
+    lockedCornersRef.current = null
+    setHoldMessage(next === 'book' ? '背を中央付近に合わせてください' : '')
   }
 
   return (
@@ -302,18 +368,72 @@ export function CameraView({
 
       <div className="camera-view-stage">
         <video ref={videoRef} playsInline muted className="camera-video" />
+        {captureMode === 'book' && mode !== 'replace' && (
+          <div className="book-capture-guide" aria-hidden="true">
+            <div className="book-guide-spine" />
+            <span className="book-guide-label left">左頁</span>
+            <span className="book-guide-label right">右頁</span>
+          </div>
+        )}
         {corners && (
           <svg className="live-contour" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
             <polygon points={corners.map((point) => `${point.x},${point.y}`).join(' ')} />
           </svg>
         )}
-        {!corners && <div className="camera-guide" aria-hidden="true" />}
+        {!corners && captureMode === 'document' && <div className="camera-guide" aria-hidden="true" />}
         {flash && <div className="shutter-flash" aria-hidden="true" />}
         {holdMessage && <p className="auto-hint">{holdMessage}</p>}
         {error && <div className="camera-error">{error}</div>}
       </div>
 
       <footer className="camera-view-footer">
+        {mode === 'append' && (
+          <div className="camera-mode-row camera-capture-type-row">
+            <div className="segmented compact">
+              <button
+                type="button"
+                className={captureMode === 'document' ? 'active' : ''}
+                onClick={() => selectCaptureMode('document')}
+              >
+                書類
+              </button>
+              <button
+                type="button"
+                className={captureMode === 'book' ? 'active' : ''}
+                onClick={() => selectCaptureMode('book')}
+              >
+                本
+              </button>
+            </div>
+            {captureMode === 'book' && (
+              <div className="segmented compact book-order-segment">
+                <button
+                  type="button"
+                  className={bookPageOrder === 'ltr' ? 'active' : ''}
+                  onClick={() => {
+                    setBookPageOrder('ltr')
+                    saveBookPageOrder('ltr')
+                  }}
+                  aria-label="ページ順 左から右"
+                >
+                  左→右
+                </button>
+                <button
+                  type="button"
+                  className={bookPageOrder === 'rtl' ? 'active' : ''}
+                  onClick={() => {
+                    setBookPageOrder('rtl')
+                    saveBookPageOrder('rtl')
+                  }}
+                  aria-label="ページ順 右から左"
+                >
+                  右→左
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="camera-mode-row">
           <div className="segmented">
             <button
@@ -336,13 +456,17 @@ export function CameraView({
                 autoArmedRef.current = true
                 lockedCornersRef.current = null
                 missingSinceRef.current = null
-                setHoldMessage('書類を枠内に合わせてください')
+                capturedBookFrameRef.current = null
+                bookChangeFramesRef.current = 0
+                setHoldMessage(
+                  captureMode === 'book' ? '背を中央付近に合わせてください' : '書類を枠内に合わせてください'
+                )
               }}
             >
               自動
             </button>
           </div>
-          {mode === 'append' && onRequestHighRes && (
+          {mode === 'append' && captureMode === 'document' && onRequestHighRes && (
             <button type="button" className="chip-mini" onClick={onRequestHighRes}>
               高精細
             </button>
@@ -354,18 +478,22 @@ export function CameraView({
             type="button"
             className="thumb-stack"
             onClick={onOpenGallery}
-            disabled={pageCount <= 0}
+            disabled={pageCount <= 0 && !captureProcessing}
             aria-label="ページ一覧"
           >
             {latestThumbUrl ? <img src={latestThumbUrl} alt="" /> : <span className="thumb-empty" />}
-            {pageCount > 0 && <span className="thumb-badge">{pageCount}</span>}
+            {(pageCount > 0 || captureProcessing) && (
+              <span className={`thumb-badge ${captureProcessing ? 'processing' : ''}`}>
+                {captureProcessing ? '…' : pageCount}
+              </span>
+            )}
           </button>
 
           <button
             type="button"
             className="shutter-button large"
             onClick={() => void capture()}
-            disabled={Boolean(error)}
+            disabled={Boolean(error) || captureProcessing}
             aria-label="撮影"
           >
             <span />
