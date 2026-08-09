@@ -3,6 +3,7 @@ import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ScanPage } from '../types'
 import {
+  galleryThumbKey,
   getGalleryPlaceholder,
   getGalleryThumbUrl,
   subscribeGalleryPlaceholder
@@ -16,6 +17,7 @@ type Props = {
 }
 
 export function PageCard({ page, index, onOpen, onMenu }: Props) {
+  const thumbKey = galleryThumbKey(page)
   const [thumb, setThumb] = useState<string | null>(null)
   const [placeholder, setPlaceholder] = useState<string | null>(() => getGalleryPlaceholder(page.id))
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: page.id })
@@ -34,14 +36,16 @@ export function PageCard({ page, index, onOpen, onMenu }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    setThumb(null)
+    // Keep showing the previous corrected thumb (or placeholder) while regenerating —
+    // never flash back to "…" on OCR / translation-only updates.
     void getGalleryThumbUrl(page).then((url) => {
       if (!cancelled) setThumb(url)
     })
     return () => {
       cancelled = true
     }
-  }, [page])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- image-affecting fields only via thumbKey
+  }, [thumbKey])
 
   const preview = thumb ?? placeholder
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SaveStatus, ScanPage } from '../types'
 import {
-  clearActiveDocument,
+  archiveDocument,
   estimateStorage,
   isQuotaExceededError,
   isStorageAvailable,
@@ -131,7 +131,8 @@ export const useDocumentStorage = ({
     const previous = pagesRef.current
     try {
       if (isStorageAvailable()) {
-        await clearActiveDocument(documentId)
+        // Archive only — keep pages/images/pageOrder for a future document library.
+        await archiveDocument(documentId)
       }
     } catch (error) {
       console.warn('Failed to archive document', error)

@@ -19,6 +19,7 @@ import {
   type ViewMode
 } from './types'
 import { detectDocumentCorners } from './utils/corners'
+import { shouldAcceptRefinedCorners } from './utils/cornerRefine'
 import { getGalleryPlaceholder, prefetchGalleryThumb, seedGalleryPlaceholder } from './utils/galleryThumbs'
 import { cancelHighResStitch, stitchHighResAdaptive } from './utils/highResWorkerClient'
 import { RENDER_MAX, defaultCorners, renderScanPage } from './utils/image'
@@ -212,24 +213,47 @@ export default function App() {
   const refineCapturedCorners = async (pageId: string, dataUrl: string) => {
     try {
       const detection = await detectDocumentCorners(dataUrl)
-      updatePageImage(pageId, (page) => {
-        if (page.cornerDetection === 'manual') return page
+      const page = pagesRef.current.find((item) => item.id === pageId)
+      if (!page) return
+      if (
+        !shouldAcceptRefinedCorners({
+          cornerDetection: page.cornerDetection,
+          currentDataUrl: page.dataUrl,
+          refineDataUrl: dataUrl,
+          currentCorners: page.corners,
+          currentConfidence: page.cornerConfidence ?? 0,
+          still: detection
+        })
+      ) {
+        return
+      }
+
+      updatePageImage(pageId, (current) => {
+        if (
+          !shouldAcceptRefinedCorners({
+            cornerDetection: current.cornerDetection,
+            currentDataUrl: current.dataUrl,
+            refineDataUrl: dataUrl,
+            currentCorners: current.corners,
+            currentConfidence: current.cornerConfidence ?? 0,
+            still: detection
+          })
+        ) {
+          return current
+        }
         return {
-          ...page,
+          ...current,
           corners: detection.corners,
-          cornerDetection: detection.detected ? 'auto' : 'fallback',
+          cornerDetection: 'auto',
           cornerConfidence: detection.confidence
         }
       })
-      const refined = pagesRef.current.find((page) => page.id === pageId)
-      if (refined && refined.cornerDetection !== 'manual') {
-        prefetchGalleryThumb({
-          ...refined,
-          corners: detection.corners,
-          cornerDetection: detection.detected ? 'auto' : 'fallback',
-          cornerConfidence: detection.confidence
-        })
-      }
+      prefetchGalleryThumb({
+        ...page,
+        corners: detection.corners,
+        cornerDetection: 'auto',
+        cornerConfidence: detection.confidence
+      })
     } catch (error) {
       console.warn('Background corner refine failed.', error)
     }
@@ -456,16 +480,16 @@ export default function App() {
   const performSaveJpeg = async () => {
     if (!pages.length) return
     setIsBusy(true)
-    setExportStatus('JPEGを作成しています…')
+    setExportStatus(`JPEGを作成しています…\n0 / ${pages.length}ページ`)
     try {
-      await Promise.all(
-        pages.map(async (page, index) => {
-          const canvas = await renderScanPage(page, RENDER_MAX.export)
-          const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.96))
-          if (!blob) throw new Error('JPEGを作成できませんでした。')
-          downloadBlob(blob, `${fileName.replace(/\.pdf$/i, '')}-${index + 1}.jpg`)
-        })
-      )
+      for (let index = 0; index < pages.length; index += 1) {
+        setExportStatus(`JPEGを作成しています…\n${index + 1} / ${pages.length}ページ`)
+        const page = pages[index]
+        const canvas = await renderScanPage(page, RENDER_MAX.export)
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.96))
+        if (!blob) throw new Error('JPEGを作成できませんでした。')
+        downloadBlob(blob, `${fileName.replace(/\.pdf$/i, '')}-${index + 1}.jpg`)
+      }
       setSaveSheetOpen(false)
     } catch (error) {
       console.error(error)

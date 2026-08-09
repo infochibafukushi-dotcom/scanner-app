@@ -5,7 +5,8 @@ const cache = new Map<string, string>()
 const placeholders = new Map<string, string>()
 const placeholderListeners = new Map<string, Set<() => void>>()
 
-const pageThumbKey = (page: ScanPage) =>
+/** Image-affecting key for gallery thumbs (excludes OCR / translation / names). */
+export const galleryThumbKey = (page: ScanPage) =>
   [
     page.id,
     page.dataUrl.length,
@@ -54,7 +55,7 @@ export const seedGalleryPlaceholder = async (pageId: string, dataUrl: string, ma
 
 /** Low-res corrected thumbnail for Gallery; regenerates only when page content changes. */
 export const getGalleryThumbUrl = async (page: ScanPage): Promise<string> => {
-  const key = pageThumbKey(page)
+  const key = galleryThumbKey(page)
   const hit = cache.get(key)
   if (hit) return hit
 

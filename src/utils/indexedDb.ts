@@ -321,6 +321,99 @@ export const clearActiveDocument = async (documentId: string) => {
   await txDone(tx)
 }
 
+/**
+ * Mark a document archived without deleting pages/images/pageOrder.
+ * Used by "新規文書" so a future library UI can restore past scans.
+ */
+export const archiveDocument = async (documentId: string) => {
+  const db = await openDatabase()
+  const existing = await new Promise<DocumentMeta | undefined>((resolve, reject) => {
+    const tx = db.transaction([STORE_DOCUMENTS], 'readonly')
+    const request = tx.objectStore(STORE_DOCUMENTS).get(documentId)
+    request.onsuccess = () => resolve(request.result as DocumentMeta | undefined)
+    request.onerror = () => reject(request.error ?? new Error('Failed to read document'))
+  })
+  if (!existing) return
+
+  const tx = db.transaction([STORE_DOCUMENTS], 'readwrite')
+  tx.objectStore(STORE_DOCUMENTS).put({
+    ...existing,
+    status: 'archived',
+    updatedAt: Date.now()
+  })
+  await txDone(tx)
+}
+
+export const getDocumentMeta = async (documentId: string): Promise<DocumentMeta | null> => {
+  const db = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_DOCUMENTS], 'readonly')
+    const request = tx.objectStore(STORE_DOCUMENTS).get(documentId)
+    request.onsuccess = () => resolve((request.result as DocumentMeta | undefined) ?? null)
+    request.onerror = () => reject(request.error ?? new Error('Failed to read document'))
+  })
+}
+
+export const listDocumentMetas = async (): Promise<DocumentMeta[]> => {
+  const db = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_DOCUMENTS], 'readonly')
+    const request = tx.objectStore(STORE_DOCUMENTS).getAll()
+    request.onsuccess = () => resolve((request.result as DocumentMeta[]) ?? [])
+    request.onerror = () => reject(request.error ?? new Error('Failed to list documents'))
+  })
+}
+
+export const countPagesForDocument = async (documentId: string): Promise<number> => {
+  const db = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_PAGES], 'readonly')
+    const request = tx.objectStore(STORE_PAGES).index('documentId').getAll(documentId)
+    request.onsuccess = () => resolve(((request.result as PageRecord[]) ?? []).length)
+    request.onerror = () => reject(request.error ?? new Error('Failed to count pages'))
+  })
+}
+
+export const countImagesForPageIds = async (pageIds: string[]): Promise<number> => {
+  if (!pageIds.length) return 0
+  const db = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_IMAGES], 'readonly')
+    const store = tx.objectStore(STORE_IMAGES)
+    let pending = pageIds.length
+    let count = 0
+    for (const pageId of pageIds) {
+      const request = store.get(pageId)
+      request.onsuccess = () => {
+        if (request.result) count += 1
+        pending -= 1
+        if (!pending) resolve(count)
+      }
+      request.onerror = () => reject(request.error ?? new Error('Failed to count images'))
+    }
+  })
+}
+
+/** Test helper: close and wipe the scanner-app database. */
+export const resetIndexedDbForTests = async () => {
+  if (dbPromise) {
+    try {
+      const db = await dbPromise
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+  dbPromise = null
+  if (!supportsIndexedDb()) return
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(DB_NAME)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error ?? new Error('Failed to delete IndexedDB'))
+    request.onblocked = () => resolve()
+  })
+}
+
 export const deletePage = async (pageId: string) => {
   const db = await openDatabase()
   const tx = db.transaction([STORE_PAGES, STORE_IMAGES], 'readwrite')

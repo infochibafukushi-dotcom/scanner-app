@@ -6,6 +6,7 @@ import {
   AUTO_CAPTURE_STABLE_DELTA,
   AUTO_CAPTURE_STABLE_FRAMES
 } from '../utils/corners'
+import { loadAutoCapturePreference, saveAutoCapturePreference } from '../utils/autoCaptureStorage'
 import {
   detectLiveDocumentCorners,
   frameDifference,
@@ -61,7 +62,7 @@ export function CameraView({
   const missingSinceRef = useRef<number | null>(null)
   const lockedCornersRef = useRef<Point[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [autoCapture, setAutoCapture] = useState(false)
+  const [autoCapture, setAutoCapture] = useState(() => loadAutoCapturePreference())
   const [torchSupported, setTorchSupported] = useState(false)
   const [torchOn, setTorchOn] = useState(false)
   const [corners, setCorners] = useState<Point[] | null>(null)
@@ -125,7 +126,9 @@ export function CameraView({
 
   useEffect(() => {
     if (!active) return
-    setAutoCapture(false)
+    // Replace (retake) starts in manual to avoid accidental auto shutter on the wrong page.
+    // Append mode restores the user's remembered auto-capture preference.
+    setAutoCapture(mode === 'replace' ? false : loadAutoCapturePreference())
     autoArmedRef.current = true
     missingSinceRef.current = null
     lockedCornersRef.current = null
@@ -135,7 +138,7 @@ export function CameraView({
     displayCornersRef.current = null
     setHoldMessage('')
     setCorners(null)
-  }, [active])
+  }, [active, mode])
 
   const capture = useCallback(async () => {
     const video = videoRef.current
@@ -185,6 +188,8 @@ export function CameraView({
         if (!autoCapture) return
         if (!autoArmedRef.current) {
           missingSinceRef.current ??= Date.now()
+          // Document left the frame long enough — re-arm for the next sheet.
+          // TODO: book capture mode needs content-diff based re-arm (page turns keep similar outer corners).
           if (Date.now() - missingSinceRef.current >= 850) {
             autoArmedRef.current = true
             lockedCornersRef.current = null
@@ -207,6 +212,8 @@ export function CameraView({
 
       if (!autoArmedRef.current) {
         const locked = lockedCornersRef.current
+        // Same-paper lock: require the sheet to leave frame or move corners a lot before re-arming.
+        // TODO: book capture mode needs content-diff based re-arm (page turns keep similar outer corners).
         const movedAway = locked ? cornerDelta(locked, result.corners) > 0.18 : false
         if (movedAway) {
           autoArmedRef.current = true
@@ -314,6 +321,7 @@ export function CameraView({
               className={!autoCapture ? 'active' : ''}
               onClick={() => {
                 setAutoCapture(false)
+                saveAutoCapturePreference(false)
                 setHoldMessage('')
               }}
             >
@@ -324,6 +332,7 @@ export function CameraView({
               className={autoCapture ? 'active' : ''}
               onClick={() => {
                 setAutoCapture(true)
+                saveAutoCapturePreference(true)
                 autoArmedRef.current = true
                 lockedCornersRef.current = null
                 missingSinceRef.current = null
