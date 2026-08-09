@@ -1,15 +1,31 @@
 export type FilterMode = 'auto' | 'color' | 'gray' | 'bw'
+/** @deprecated Use PaperSize. Kept for migration of older persisted data. */
 export type PaperRatio = 'auto' | 'a4' | 'letter' | 'free'
+export type PaperSize =
+  | 'auto'
+  | 'a3'
+  | 'a4'
+  | 'a5'
+  | 'business-card'
+  | 'letter'
+  | 'free'
 export type CornerDetectionMode = 'auto' | 'fallback' | 'manual'
 export type ProcessStatus = 'idle' | 'processing' | 'done' | 'error' | 'stale'
 export type HighResTileId = 'tl' | 'tr' | 'br' | 'bl'
 export type HighResCaptureStep = 'base' | HighResTileId
 export type AppTab = 'capture' | 'pages' | 'edit' | 'save'
 export type EditTool = 'crop' | 'rotate' | 'filter' | 'enhance' | 'ocr'
+export type SaveStatus = 'idle' | 'saving' | 'saved' | 'unavailable' | 'error'
 
 export type Point = {
   x: number
   y: number
+}
+
+export type CornerDetectionResult = {
+  corners: [Point, Point, Point, Point]
+  detected: boolean
+  confidence: number
 }
 
 export type ScanPage = {
@@ -18,10 +34,13 @@ export type ScanPage = {
   dataUrl: string
   corners: [Point, Point, Point, Point]
   cornerDetection: CornerDetectionMode
+  cornerConfidence?: number
   rotation: number
   filter: FilterMode
   clean: boolean
-  paperRatio: PaperRatio
+  paperSize: PaperSize
+  /** @deprecated Migrated into paperSize on load. */
+  paperRatio?: PaperRatio
   ocrText?: string
   ocrStatus?: ProcessStatus
   ocrError?: string

@@ -1,29 +1,33 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CameraCapture } from './components/CameraCapture'
 import { CornerEditor } from './components/CornerEditor'
 import { CorrectedPreview } from './components/CorrectedPreview'
 import { HighResCapture } from './components/HighResCapture'
 import { HighResPreview } from './components/HighResPreview'
 import { OcrTextPanel } from './components/OcrTextPanel'
+import { PageManager } from './components/PageManager'
+import { PaperSizeSelector } from './components/PaperSizeSelector'
 import { PreviewModal } from './components/PreviewModal'
 import { ReplacePreview } from './components/ReplacePreview'
 import { TranslationPanel } from './components/TranslationPanel'
+import { useDocumentStorage } from './hooks/useDocumentStorage'
 import {
   invalidateOcrForImageChange,
   type AppTab,
   type EditTool,
   type FilterMode,
   type HighResTileId,
-  type PaperRatio,
+  type PaperSize,
   type ScanPage
 } from './types'
 import { detectDocumentCorners } from './utils/corners'
+import { cancelHighResStitch, stitchHighResAdaptive } from './utils/highResWorkerClient'
 import { RENDER_MAX, renderScanPage } from './utils/image'
 import { collectPageTexts, recognizePage } from './utils/ocr'
-import { PAPER_OPTIONS } from './utils/paper'
+import { moveByOffset } from './utils/pageOrder'
+import { paperSizeLabel } from './utils/paper'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
 import { sharePagesWithGpt } from './utils/share'
-import { stitchHighRes } from './utils/highResStitch'
 import { downloadTextFile, downloadWordFile } from './utils/textExport'
 
 type PreviewIntent = 'preview' | 'save' | 'share' | 'text' | 'word'
@@ -52,10 +56,11 @@ const makePage = async (dataUrl: string, name: string): Promise<ScanPage> => {
     dataUrl,
     corners: detection.corners,
     cornerDetection: detection.detected ? 'auto' : 'fallback',
+    cornerConfidence: detection.confidence,
     rotation: 0,
     filter: 'color',
     clean: false,
-    paperRatio: 'auto',
+    paperSize: 'auto',
     ocrStatus: 'idle',
     translationStatus: 'idle'
   }
@@ -115,6 +120,23 @@ export default function App() {
   const translationPanelRef = useRef<HTMLDivElement | null>(null)
   const pagesRef = useRef(pages)
   pagesRef.current = pages
+
+  const handleRestore = useCallback(
+    (payload: { pages: ScanPage[]; selectedId: string | null; fileName: string }) => {
+      setPages(payload.pages)
+      setSelectedId(payload.selectedId ?? payload.pages[0]?.id ?? null)
+      setFileName(payload.fileName || initialFileName())
+      setTab(payload.pages.length > 1 ? 'pages' : payload.pages.length === 1 ? 'edit' : 'capture')
+    },
+    []
+  )
+
+  const { saveStatus, storageWarning, restoreMessage, startNewDocument } = useDocumentStorage({
+    pages,
+    selectedId,
+    fileName,
+    onRestore: handleRestore
+  })
 
   const selectedPage = useMemo(() => pages.find((page) => page.id === selectedId) ?? null, [pages, selectedId])
   const selectedIndex = useMemo(
@@ -179,6 +201,7 @@ export default function App() {
         dataUrl: pendingReplaceUrl,
         corners: detection.corners,
         cornerDetection: detection.detected ? 'auto' : 'fallback',
+        cornerConfidence: detection.confidence,
         rotation: 0
       }))
       setSelectedId(replacePageId)
@@ -216,6 +239,13 @@ export default function App() {
     if (index < 0) return
     if (confirm && !window.confirm(`${index + 1}ページ目を削除しますか？`)) return
     const removed = pages[index]
+    if (removed.dataUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(removed.dataUrl)
+      } catch {
+        /* ignore */
+      }
+    }
     setPages((current) => {
       const next = current.filter((page) => page.id !== pageId)
       if (selectedId === pageId) {
@@ -238,16 +268,7 @@ export default function App() {
     setUndo(null)
   }
 
-  const movePage = (pageId: string, direction: -1 | 1) =>
-    setPages((current) => {
-      const index = current.findIndex((page) => page.id === pageId)
-      const target = index + direction
-      if (index < 0 || target < 0 || target >= current.length) return current
-      const next = [...current]
-      const [page] = next.splice(index, 1)
-      next.splice(target, 0, page)
-      return next
-    })
+  const movePage = (pageId: string, direction: -1 | 1) => setPages((current) => moveByOffset(current, pageId, direction))
 
   const redetectCorners = async (page: ScanPage) => {
     setDetectingId(page.id)
@@ -256,9 +277,10 @@ export default function App() {
       updatePageImage(page.id, (current) => ({
         ...current,
         corners: detection.corners,
-        cornerDetection: detection.detected ? 'auto' : 'fallback'
+        cornerDetection: detection.detected ? 'auto' : 'fallback',
+        cornerConfidence: detection.confidence
       }))
-      if (!detection.detected) window.alert('書類の輪郭を自動判定できませんでした。青い四隅を手動で合わせてください。')
+      if (!detection.detected) window.alert('四隅を自動検出できませんでした。青い四隅を手動で合わせてください。')
     } finally {
       setDetectingId(null)
     }
@@ -447,10 +469,11 @@ export default function App() {
     setHighResOpen(false)
     setStitchProgress('高精細画像を作成しています…')
     try {
-      const result = await stitchHighRes({
+      const result = await stitchHighResAdaptive({
         baseDataUrl: shots.base,
         tiles: shots.tiles,
-        onProgress: ({ stage, current, total }) => setStitchProgress(`高精細画像を作成しています…\n${stage} (${current}/${total})`)
+        onProgress: ({ stage, current, total }) =>
+          setStitchProgress(`高精細画像を作成しています…\n${stage} (${current}/${total})`)
       })
       if (result.ok) {
         setStitchPreview({
@@ -459,7 +482,11 @@ export default function App() {
           qualityFailed: result.warnings.length > 0,
           failedTiles: []
         })
-      } else setStitchFailure({ message: result.message, failedTiles: result.failedTiles })
+      } else if (result.message === 'キャンセルされました。') {
+        setStitchFailure(undefined)
+      } else {
+        setStitchFailure({ message: result.message, failedTiles: result.failedTiles })
+      }
     } finally {
       setStitchProgress('')
     }
@@ -500,6 +527,31 @@ export default function App() {
     setCameraOpen(true)
   }
 
+  const handleNewDocument = async () => {
+    if (pages.length > 0) {
+      const ok = window.confirm(`現在の${pages.length}ページを終了して\n新しい文書を作成しますか？`)
+      if (!ok) return
+    }
+    await startNewDocument()
+    setPages([])
+    setSelectedId(null)
+    setFileName(initialFileName())
+    setTab('capture')
+    setUndo(null)
+    setSaveSheetOpen(false)
+  }
+
+  const saveStatusLabel =
+    saveStatus === 'saving'
+      ? '保存中…'
+      : saveStatus === 'saved'
+        ? '✓ 自動保存済み'
+        : saveStatus === 'unavailable'
+          ? '自動保存オフ'
+          : saveStatus === 'error'
+            ? '保存失敗'
+            : ''
+
   return (
     <div className="app-shell">
       <CameraCapture
@@ -529,6 +581,16 @@ export default function App() {
       {stitchProgress && (
         <div className="processing-overlay" role="status">
           <div>{stitchProgress}</div>
+          <button
+            type="button"
+            className="secondary-button stitch-cancel"
+            onClick={() => {
+              cancelHighResStitch()
+              setStitchProgress('')
+            }}
+          >
+            キャンセル
+          </button>
         </div>
       )}
       {stitchFailure && (
@@ -590,6 +652,11 @@ export default function App() {
           <span className="badge">書類をすばやくデジタル化</span>
           <h1>Scanner</h1>
           <p>撮影 → ページ管理 → 編集 → 保存 の順で進めます。</p>
+          {(saveStatusLabel || storageWarning) && (
+            <p className="save-status" aria-live="polite">
+              {storageWarning ?? saveStatusLabel}
+            </p>
+          )}
         </div>
         <div className="hero-actions">
           <button type="button" className="primary-button" onClick={openCamera}>
@@ -599,63 +666,34 @@ export default function App() {
             <input type="file" accept="image/*" multiple onChange={(event) => void addFiles(event)} hidden />
             写真を追加
           </label>
+          <button type="button" className="secondary-button" onClick={() => void handleNewDocument()}>
+            新しい文書
+          </button>
         </div>
       </header>
 
+      {restoreMessage && (
+        <div className="restore-toast" role="status">
+          {restoreMessage}
+        </div>
+      )}
+
       <main className="mobile-workspace">
         {(tab === 'capture' || tab === 'pages') && (
-          <section className="page-list card">
-            <div className="section-title-row">
-              <h2>ページ</h2>
-              <span>{pages.length}枚</span>
-            </div>
-            {!pages.length ? (
-              <div className="empty-state">
-                <p>まだページがありません。</p>
-                <p>下部の「撮影」からスキャンを開始してください。</p>
-                <button type="button" className="primary-button" onClick={openCamera}>
-                  撮影を開始
-                </button>
-              </div>
-            ) : (
-              <div className="page-grid">
-                {pages.map((page, index) => (
-                  <article key={page.id} className={`page-card ${selectedId === page.id ? 'active' : ''}`}>
-                    <button
-                      type="button"
-                      className="page-card-image"
-                      onClick={() => {
-                        setSelectedId(page.id)
-                        setTab('edit')
-                        setEditTool('crop')
-                      }}
-                    >
-                      <img src={page.dataUrl} alt={`ページ ${index + 1}`} />
-                      <strong>{index + 1}</strong>
-                    </button>
-                    <div className="page-card-actions">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedId(page.id)
-                          setTab('edit')
-                          setEditTool('crop')
-                        }}
-                      >
-                        編集
-                      </button>
-                      <button type="button" onClick={() => startRetake(page.id)}>
-                        撮り直し
-                      </button>
-                      <button type="button" className="danger" onClick={() => removePage(page.id)}>
-                        削除
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+          <PageManager
+            pages={pages}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onEdit={(pageId) => {
+              setSelectedId(pageId)
+              setTab('edit')
+              setEditTool('crop')
+            }}
+            onRetake={startRetake}
+            onDelete={removePage}
+            onReorder={setPages}
+            onOpenCamera={openCamera}
+          />
         )}
 
         {tab === 'edit' &&
@@ -694,6 +732,7 @@ export default function App() {
                     clean={selectedPage.clean}
                     corners={selectedPage.corners}
                     detectionMode={selectedPage.cornerDetection}
+                    confidence={selectedPage.cornerConfidence}
                     detecting={detectingId === selectedPage.id}
                     onChange={(corners) =>
                       updatePageImage(selectedPage.id, (page) => ({ ...page, corners, cornerDetection: 'manual' }))
@@ -739,25 +778,13 @@ export default function App() {
                   )}
                   {(editTool === 'crop' || editTool === 'enhance') && (
                     <>
-                      <label className="field">
-                        <span>用紙</span>
-                        <select
-                          className="target-select"
-                          value={selectedPage.paperRatio}
-                          onChange={(event) =>
-                            updatePageImage(selectedPage.id, (page) => ({
-                              ...page,
-                              paperRatio: event.target.value as PaperRatio
-                            }))
-                          }
-                        >
-                          {PAPER_OPTIONS.map((option) => (
-                            <option key={option.key} value={option.key}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <PaperSizeSelector
+                        value={selectedPage.paperSize}
+                        corners={selectedPage.corners}
+                        onChange={(paperSize: PaperSize) =>
+                          updatePageImage(selectedPage.id, (page) => ({ ...page, paperSize }))
+                        }
+                      />
                       <button
                         type="button"
                         className={selectedPage.clean ? 'chip active' : 'chip'}
@@ -767,7 +794,7 @@ export default function App() {
                       </button>
                       <p className="helper-text">
                         現在: {filterLabel(selectedPage.filter)} / 用紙{' '}
-                        {PAPER_OPTIONS.find((item) => item.key === selectedPage.paperRatio)?.label}
+                        {paperSizeLabel(selectedPage.paperSize, selectedPage.corners)}
                       </p>
                     </>
                   )}
@@ -906,11 +933,7 @@ export default function App() {
       )}
 
       <nav className="bottom-tabs" aria-label="主な操作">
-        <button
-          type="button"
-          className={tab === 'capture' || cameraOpen ? 'active' : ''}
-          onClick={openCamera}
-        >
+        <button type="button" className={tab === 'capture' || cameraOpen ? 'active' : ''} onClick={openCamera}>
           撮影
         </button>
         <button type="button" className={tab === 'pages' ? 'active' : ''} onClick={() => setTab('pages')}>

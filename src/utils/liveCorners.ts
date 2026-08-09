@@ -1,10 +1,7 @@
-import type { Point } from '../types'
+import type { CornerDetectionResult, Point } from '../types'
 import { detectDocumentCorners } from './corners'
 
-export type LiveCornerResult = {
-  corners: [Point, Point, Point, Point]
-  detected: boolean
-}
+export type LiveCornerResult = CornerDetectionResult
 
 /** Captures a small frame so contour work does not compete with camera rendering. */
 export const detectLiveDocumentCorners = async (
@@ -50,3 +47,5 @@ export const readSmallVideoFrame = (video: HTMLVideoElement, size = 96): ImageDa
   context.drawImage(video, 0, 0, size, size)
   return context.getImageData(0, 0, size, size)
 }
+
+export type { Point }

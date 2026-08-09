@@ -9,6 +9,10 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@techstark/opencv-js']
   },
+  // Required so OpenCV dynamic imports can code-split inside the high-res worker.
+  worker: {
+    format: 'es'
+  },
   build: {
     chunkSizeWarningLimit: 16000
   },

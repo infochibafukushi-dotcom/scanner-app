@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Point } from '../types'
 import { captureStillDataUrl, openRearCamera } from '../utils/cameraCapture'
+import { AUTO_CAPTURE_CONFIDENCE } from '../utils/corners'
 import { detectLiveDocumentCorners, frameDifference, readSmallVideoFrame } from '../utils/liveCorners'
 import '../highres.css'
 
@@ -148,6 +149,7 @@ export function CameraCapture({
       setCorners(result.corners)
       const previous = lastCornersRef.current
       lastCornersRef.current = result.corners
+      const confident = result.confidence >= AUTO_CAPTURE_CONFIDENCE
 
       if (!autoCapture) return
 
@@ -166,6 +168,12 @@ export function CameraCapture({
       }
 
       missingSinceRef.current = null
+      if (!confident) {
+        stableSinceRef.current = null
+        setHoldMessage('四隅を確認してください')
+        return
+      }
+
       const stableCorners = previous ? cornerDelta(previous, result.corners) < 0.025 : false
       const still = motion.difference < 7
       if (stableCorners && still) {

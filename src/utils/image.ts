@@ -405,7 +405,7 @@ const warpPerspective = (
   sourceCanvas: HTMLCanvasElement,
   corners: [Point, Point, Point, Point],
   maxSide: number = RENDER_MAX.export,
-  paperRatio: ScanPage['paperRatio'] = 'auto'
+  paperSize: ScanPage['paperSize'] = 'auto'
 ) => {
   const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true })
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
@@ -419,7 +419,7 @@ const warpPerspective = (
   let outputWidth = Math.max(distance(topLeft, topRight), distance(bottomLeft, bottomRight))
   let outputHeight = Math.max(distance(topLeft, bottomLeft), distance(topRight, bottomRight))
 
-  const targetAspect = resolveTargetAspect(paperRatio, corners)
+  const targetAspect = resolveTargetAspect(paperSize, corners)
   ;({ width: outputWidth, height: outputHeight } = applyAspectToSize(outputWidth, outputHeight, targetAspect))
 
   const scale = Math.min(1, maxSide / Math.max(outputWidth, outputHeight))
@@ -503,7 +503,12 @@ export const renderScanPage = async (
   enableHighQuality(sourceCtx)
   sourceCtx.drawImage(sourceImage, 0, 0)
 
-  const correctedCanvas = warpPerspective(sourceCanvas, page.corners, maxSide, page.paperRatio ?? 'auto')
+  const correctedCanvas = warpPerspective(
+    sourceCanvas,
+    page.corners,
+    maxSide,
+    page.paperSize ?? (page as { paperRatio?: ScanPage['paperSize'] }).paperRatio ?? 'auto'
+  )
   const correctedCtx = correctedCanvas.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')
   enhanceDocument(correctedCtx, correctedCanvas.width, correctedCanvas.height)

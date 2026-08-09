@@ -14,6 +14,7 @@ type CornerEditorProps = {
   detectionMode: CornerDetectionMode
   detecting: boolean
   clean?: boolean
+  confidence?: number
   onChange: (corners: [Point, Point, Point, Point]) => void
   onRedetect: () => void
 }
@@ -25,10 +26,11 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const pointerDistance = (first: PointerEvent, second: PointerEvent) =>
   Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY)
 
-const detectionLabel: Record<CornerDetectionMode, string> = {
-  auto: '自動検出済み',
-  fallback: '自動検出できず標準範囲',
-  manual: '手動調整済み'
+const detectionLabel = (mode: CornerDetectionMode, confidence?: number) => {
+  if (mode === 'manual') return '手動調整済み'
+  if (mode === 'fallback') return '四隅を自動検出できませんでした'
+  if (typeof confidence === 'number' && confidence < 0.62) return '四隅を確認してください'
+  return '自動検出済み'
 }
 
 const loupeSizeForViewport = () => {
@@ -69,6 +71,7 @@ export function CornerEditor({
   detectionMode,
   detecting,
   clean = false,
+  confidence,
   onChange,
   onRedetect
 }: CornerEditorProps) {
@@ -295,7 +298,9 @@ export function CornerEditor({
         <div>
           <div className="editor-title-line">
             <h3>四隅調整</h3>
-            <span className={`detection-badge ${detectionMode}`}>{detectionLabel[detectionMode]}</span>
+            <span className={`detection-badge ${detectionMode}`}>
+              {detectionLabel(detectionMode, confidence)}
+            </span>
           </div>
           <p>1本指で移動、2本指で拡大。角ドラッグ中は指の近くに拡大ルーペを表示します。</p>
         </div>
