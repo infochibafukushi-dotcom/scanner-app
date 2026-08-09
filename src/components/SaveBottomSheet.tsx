@@ -10,6 +10,7 @@ type Props = {
   onFileNameChange: (value: string) => void
   onSavePdf: () => void
   onSaveJpeg: () => void
+  onSaveZip: () => void
   onSaveText: () => void
   onSaveWord: () => void
   onShare: () => void
@@ -26,6 +27,7 @@ export function SaveBottomSheet({
   onFileNameChange,
   onSavePdf,
   onSaveJpeg,
+  onSaveZip,
   onSaveText,
   onSaveWord,
   onShare,
@@ -52,6 +54,9 @@ export function SaveBottomSheet({
         <button type="button" onClick={onSaveJpeg} disabled={disabled || busy}>
           JPEG
         </button>
+        <button type="button" onClick={onSaveZip} disabled={disabled || busy}>
+          ZIP
+        </button>
         <button type="button" onClick={onSaveText} disabled={disabled || busy}>
           TXT
         </button>
@@ -65,7 +70,7 @@ export function SaveBottomSheet({
           ChatGPTへ共有
         </button>
       </div>
-      <p className="helper-text">共有は LINE・メール・Drive など端末の共有機能を使います。</p>
+      <p className="helper-text">共有は LINE・メール・Drive など端末の共有機能を使います。ZIPは補正後JPEGをまとめます。</p>
     </BottomSheet>
   )
 }

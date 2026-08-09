@@ -16,11 +16,13 @@
     "@techstark/opencv-js": "^5.0.0-release.1",
     "docx": "^9.7.1",
     "jspdf": "^2.5.2",
+    "jszip": "^3.10.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@types/jszip": "^3.4.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",

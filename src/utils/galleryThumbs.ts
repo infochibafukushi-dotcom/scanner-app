@@ -10,6 +10,7 @@ const pageThumbKey = (page: ScanPage) =>
     page.rotation,
     page.filter,
     page.clean ? 1 : 0,
+    page.flattenBook ? 1 : 0,
     page.paperSize,
     JSON.stringify(page.corners)
   ].join('|')

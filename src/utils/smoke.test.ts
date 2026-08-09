@@ -20,6 +20,7 @@ const basePage = (): ScanPage => ({
   rotation: 0,
   filter: 'color',
   clean: false,
+  flattenBook: false,
   paperSize: 'a4',
   ocrText: 'hello',
   ocrStatus: 'done'

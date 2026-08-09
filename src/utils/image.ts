@@ -159,7 +159,10 @@ const applyClean = (ctx: CanvasRenderingContext2D, width: number, height: number
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
       const index = (y * width + x) * 4
-      const value = grayscale(original[index], original[index + 1], original[index + 2])
+      const r = original[index]
+      const g = original[index + 1]
+      const b = original[index + 2]
+      const value = grayscale(r, g, b)
       const offsets = [
         ((y - 1) * width + x) * 4,
         ((y + 1) * width + x) * 4,
@@ -173,16 +176,29 @@ const applyClean = (ctx: CanvasRenderingContext2D, width: number, height: number
       const neighbors = offsets.map((offset) => grayscale(original[offset], original[offset + 1], original[offset + 2]))
       const minimum = Math.min(...neighbors)
       const average = neighbors.reduce((sum, neighbor) => sum + neighbor, 0) / neighbors.length
-      const brightNeighbors = neighbors.filter((neighbor) => neighbor > 228).length
-      // Only lift tiny isolated speckles on bright paper; leave fine text/lines alone.
-      if (value >= 140 && minimum > 228 && average - value > 45 && brightNeighbors >= 7) {
-        const mix = 0.55
+      const brightNeighbors = neighbors.filter((neighbor) => neighbor > 220).length
+      const maxChannel = Math.max(r, g, b)
+      const minChannel = Math.min(r, g, b)
+      const saturation = maxChannel === 0 ? 0 : (maxChannel - minChannel) / maxChannel
+
+      // Soften isolated ink / ballpoint-like marks on bright paper (handwriting cleanup).
+      if (value < 175 && average > 210 && brightNeighbors >= 5 && saturation > 0.18) {
+        const mix = clamp((average - value) / 140, 0.35, 0.72)
         for (let channel = 0; channel < 3; channel += 1) {
           data[index + channel] = Math.round(original[index + channel] * (1 - mix) + average * mix)
         }
-      } else if (value >= 190 && minimum > 232 && average - value > 18 && brightNeighbors >= 7) {
+        continue
+      }
+
+      // Only lift tiny isolated speckles on bright paper; leave fine text/lines alone.
+      if (value >= 140 && minimum > 224 && average - value > 40 && brightNeighbors >= 6) {
+        const mix = 0.62
         for (let channel = 0; channel < 3; channel += 1) {
-          data[index + channel] = Math.round(original[index + channel] * 0.85 + average * 0.15)
+          data[index + channel] = Math.round(original[index + channel] * (1 - mix) + average * mix)
+        }
+      } else if (value >= 185 && minimum > 230 && average - value > 16 && brightNeighbors >= 6) {
+        for (let channel = 0; channel < 3; channel += 1) {
+          data[index + channel] = Math.round(original[index + channel] * 0.8 + average * 0.2)
         }
       }
     }
@@ -191,11 +207,10 @@ const applyClean = (ctx: CanvasRenderingContext2D, width: number, height: number
 }
 
 /** Mild unsharp mask — strengthens edges slightly without visible halos. */
-const applyMildUnsharp = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+const applyMildUnsharp = (ctx: CanvasRenderingContext2D, width: number, height: number, amount = 0.22) => {
   const imageData = ctx.getImageData(0, 0, width, height)
   const { data } = imageData
   const source = new Uint8ClampedArray(data)
-  const amount = 0.22
 
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
@@ -216,6 +231,51 @@ const applyMildUnsharp = (ctx: CanvasRenderingContext2D, width: number, height: 
   }
 
   ctx.putImageData(imageData, 0, 0)
+}
+
+/**
+ * Approximate book-page flatten: expand compressed spine region after planar warp.
+ * Not a full 3D unwrap — good enough for mild curves without loading OpenCV.
+ */
+const applyBookFlatten = (source: HTMLCanvasElement, strength = 0.22): HTMLCanvasElement => {
+  const width = source.width
+  const height = source.height
+  if (width < 8 || height < 8 || strength <= 0) return source
+
+  const out = document.createElement('canvas')
+  out.width = width
+  out.height = height
+  const ctx = out.getContext('2d')
+  const srcCtx = source.getContext('2d')
+  if (!ctx || !srcCtx) return source
+
+  const src = srcCtx.getImageData(0, 0, width, height)
+  const dst = ctx.createImageData(width, height)
+  const sData = src.data
+  const dData = dst.data
+  const half = (width - 1) / 2
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const nx = (x - half) / half
+      // Expand near spine (center); sample from a more compressed source x.
+      const denom = 1 - strength * (1 - nx * nx)
+      const srcNx = nx * (denom <= 1e-4 ? 1 : 1 / denom)
+      const srcX = clamp(half + srcNx * half, 0, width - 1)
+      const x0 = Math.floor(srcX)
+      const x1 = Math.min(width - 1, x0 + 1)
+      const t = srcX - x0
+      const dstIndex = (y * width + x) * 4
+      const i0 = (y * width + x0) * 4
+      const i1 = (y * width + x1) * 4
+      for (let channel = 0; channel < 4; channel += 1) {
+        dData[dstIndex + channel] = Math.round(sData[i0 + channel] * (1 - t) + sData[i1 + channel] * t)
+      }
+    }
+  }
+
+  ctx.putImageData(dst, 0, 0)
+  return out
 }
 
 const applyAutoEnhance = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
@@ -478,28 +538,32 @@ export const renderScanPage = async (
     maxSide,
     page.paperSize ?? (page as { paperRatio?: ScanPage['paperSize'] }).paperRatio ?? 'auto'
   )
-  const correctedCtx = correctedCanvas.getContext('2d')
+  let working = correctedCanvas
+  if (page.flattenBook) {
+    working = applyBookFlatten(correctedCanvas)
+  }
+  const correctedCtx = working.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')
-  enhanceDocument(correctedCtx, correctedCanvas.width, correctedCanvas.height)
-  if (page.clean) applyClean(correctedCtx, correctedCanvas.width, correctedCanvas.height)
-  applyFilter(correctedCtx, page.filter, correctedCanvas.width, correctedCanvas.height)
-  applyMildUnsharp(correctedCtx, correctedCanvas.width, correctedCanvas.height)
+  enhanceDocument(correctedCtx, working.width, working.height)
+  if (page.clean) applyClean(correctedCtx, working.width, working.height)
+  applyFilter(correctedCtx, page.filter, working.width, working.height)
+  applyMildUnsharp(correctedCtx, working.width, working.height, page.clean ? 0.38 : 0.22)
 
   const rotation = normalizeRotation(page.rotation)
-  if (rotation === 0) return correctedCanvas
+  if (rotation === 0) return working
 
   const rotatedCanvas = document.createElement('canvas')
   const rotatedCtx = rotatedCanvas.getContext('2d')
   if (!rotatedCtx) throw new Error('Canvas context could not be created.')
 
   const isQuarterTurn = rotation === 90 || rotation === 270
-  rotatedCanvas.width = isQuarterTurn ? correctedCanvas.height : correctedCanvas.width
-  rotatedCanvas.height = isQuarterTurn ? correctedCanvas.width : correctedCanvas.height
+  rotatedCanvas.width = isQuarterTurn ? working.height : working.width
+  rotatedCanvas.height = isQuarterTurn ? working.width : working.height
 
   enableHighQuality(rotatedCtx)
   rotatedCtx.translate(rotatedCanvas.width / 2, rotatedCanvas.height / 2)
   rotatedCtx.rotate((rotation * Math.PI) / 180)
-  rotatedCtx.drawImage(correctedCanvas, -correctedCanvas.width / 2, -correctedCanvas.height / 2)
+  rotatedCtx.drawImage(working, -working.width / 2, -working.height / 2)
 
   return rotatedCanvas
 }

@@ -20,9 +20,11 @@ import { detectDocumentCorners } from './utils/corners'
 import { cancelHighResStitch, stitchHighResAdaptive } from './utils/highResWorkerClient'
 import { RENDER_MAX, renderScanPage } from './utils/image'
 import { collectPageTexts, recognizePage } from './utils/ocr'
+import { freshCorners, splitDataUrlVertically } from './utils/pageSplit'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
 import { sharePagesWithGpt } from './utils/share'
 import { downloadTextFile, downloadWordFile } from './utils/textExport'
+import { buildPagesZipBlob } from './utils/zipExport'
 import { CameraView } from './views/CameraView'
 import { EditView } from './views/EditView'
 import { GalleryView } from './views/GalleryView'
@@ -62,6 +64,7 @@ const makePage = async (dataUrl: string, name: string): Promise<ScanPage> => {
     rotation: 0,
     filter: 'color',
     clean: false,
+    flattenBook: false,
     paperSize: 'auto',
     ocrStatus: 'idle',
     translationStatus: 'idle'
@@ -394,6 +397,84 @@ export default function App() {
     }
   }
 
+  const performSaveZip = async () => {
+    if (!pages.length) return
+    setIsBusy(true)
+    setExportStatus('ZIPを作成しています…')
+    try {
+      const blob = await buildPagesZipBlob(pages, (current, total) => {
+        setExportStatus(`ZIPを作成しています…\n${current} / ${total}ページ`)
+      })
+      downloadBlob(blob, `${fileName.replace(/\.(pdf|zip)$/i, '') || 'scan'}.zip`)
+      setSaveSheetOpen(false)
+    } catch (error) {
+      console.error(error)
+      setExportStatus('ZIP保存に失敗しました。')
+    } finally {
+      setIsBusy(false)
+      window.setTimeout(() => setExportStatus(''), 2500)
+    }
+  }
+
+  const splitPage = async (pageId: string) => {
+    const index = pagesRef.current.findIndex((page) => page.id === pageId)
+    const source = pagesRef.current[index]
+    if (!source || index < 0) return
+    setIsBusy(true)
+    setExportStatus('見開きを左右に分割しています…')
+    try {
+      const [leftUrl, rightUrl] = await splitDataUrlVertically(source.dataUrl)
+      const left: ScanPage = {
+        ...source,
+        id: crypto.randomUUID(),
+        name: `${source.name}-左`,
+        dataUrl: leftUrl,
+        corners: freshCorners(),
+        cornerDetection: 'fallback',
+        cornerConfidence: undefined,
+        ocrText: undefined,
+        ocrStatus: 'idle',
+        ocrError: undefined,
+        translationText: undefined,
+        translationStatus: 'idle',
+        translationError: undefined
+      }
+      const right: ScanPage = {
+        ...source,
+        id: crypto.randomUUID(),
+        name: `${source.name}-右`,
+        dataUrl: rightUrl,
+        corners: freshCorners(),
+        cornerDetection: 'fallback',
+        cornerConfidence: undefined,
+        ocrText: undefined,
+        ocrStatus: 'idle',
+        ocrError: undefined,
+        translationText: undefined,
+        translationStatus: 'idle',
+        translationError: undefined
+      }
+      try {
+        URL.revokeObjectURL(source.dataUrl)
+      } catch {
+        /* ignore blob urls */
+      }
+      setPages((current) => {
+        const next = [...current]
+        next.splice(index, 1, left, right)
+        return next
+      })
+      setSelectedPageId(left.id)
+      setExportStatus('左右に分割しました')
+    } catch (error) {
+      console.error(error)
+      setExportStatus('分割に失敗しました')
+    } finally {
+      setIsBusy(false)
+      window.setTimeout(() => setExportStatus(''), 2200)
+    }
+  }
+
   const runPageOcr = async (page: ScanPage, force: boolean) => {
     if (anyBusy) return
     if (!force && page.ocrStatus === 'done' && typeof page.ocrText === 'string') return
@@ -609,6 +690,7 @@ export default function App() {
           onReorder={setPages}
           onRetake={startRetake}
           onDelete={removePage}
+          onSplitPage={(pageId) => void splitPage(pageId)}
           onAddPages={() => {
             setReplacePageId(null)
             setViewMode('camera')
@@ -640,6 +722,9 @@ export default function App() {
             updatePageImage(selectedPage.id, (page) => ({ ...page, filter: normalizeFilter(filter) }))
           }
           onToggleClean={() => updatePageImage(selectedPage.id, (page) => ({ ...page, clean: !page.clean }))}
+          onToggleFlattenBook={() =>
+            updatePageImage(selectedPage.id, (page) => ({ ...page, flattenBook: !page.flattenBook }))
+          }
           onRotate={(delta) => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + delta }))}
           onOpenTextRecognition={() => {
             setEditTool('ocr')
@@ -670,6 +755,7 @@ export default function App() {
         onFileNameChange={setFileName}
         onSavePdf={() => void performExportPdf()}
         onSaveJpeg={() => void performSaveJpeg()}
+        onSaveZip={() => void performSaveZip()}
         onSaveText={() => void performSaveText()}
         onSaveWord={() => void performSaveWord()}
         onShare={() => void performSharePdf()}

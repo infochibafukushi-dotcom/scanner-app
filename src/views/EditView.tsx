@@ -20,6 +20,7 @@ type Props = {
   onPaperSize: (size: PaperSize) => void
   onFilter: (filter: FilterMode) => void
   onToggleClean: () => void
+  onToggleFlattenBook: () => void
   onRotate: (delta: number) => void
   onOpenTextRecognition: () => void
 }
@@ -38,6 +39,7 @@ export function EditView({
   onPaperSize,
   onFilter,
   onToggleClean,
+  onToggleFlattenBook,
   onRotate,
   onOpenTextRecognition
 }: Props) {
@@ -126,8 +128,10 @@ export function EditView({
           <FilterToolbar
             filter={pageFilter}
             clean={page.clean}
+            flattenBook={page.flattenBook}
             onFilter={onFilter}
             onToggleClean={onToggleClean}
+            onToggleFlattenBook={onToggleFlattenBook}
           />
         )}
 

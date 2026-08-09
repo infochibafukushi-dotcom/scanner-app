@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ScanPage } from '../types'
 import { getPageOcrText } from '../utils/ocr'
 import { copyText, openChatGpt, shareText } from '../utils/share'
+import { isSpeaking, isSpeechSupported, speakText, stopSpeech } from '../utils/tts'
 import { BottomSheet } from './BottomSheet'
 import { TranslationPanel } from './TranslationPanel'
 
@@ -42,9 +43,11 @@ export function TextRecognitionBottomSheet({
 }: Props) {
   const [toast, setToast] = useState('')
   const [translationOpenSignal, setTranslationOpenSignal] = useState(0)
+  const [speaking, setSpeaking] = useState(false)
   const text = getPageOcrText(page)
   const hasResult = typeof page.ocrText === 'string'
   const isProcessing = page.ocrStatus === 'processing' || busy
+  const speechOk = isSpeechSupported()
 
   useEffect(() => {
     if (!toast) return
@@ -54,7 +57,16 @@ export function TextRecognitionBottomSheet({
 
   useEffect(() => {
     if (open) setTranslationOpenSignal((value) => value + 1)
+    return () => stopSpeech()
   }, [open])
+
+  useEffect(() => {
+    if (!speaking) return
+    const timer = window.setInterval(() => {
+      if (!isSpeaking()) setSpeaking(false)
+    }, 400)
+    return () => window.clearInterval(timer)
+  }, [speaking])
 
   const handleCopy = async () => {
     if (!text) {
@@ -73,6 +85,21 @@ export function TextRecognitionBottomSheet({
     if (result === 'shared') setToast('共有しました')
     else if (result === 'copied') setToast('コピーしました')
     else if (result === 'failed') setToast('共有に失敗しました')
+  }
+
+  const handleSpeak = () => {
+    if (speaking) {
+      stopSpeech()
+      setSpeaking(false)
+      return
+    }
+    if (!text.trim()) {
+      setToast('読み上げるテキストがありません')
+      return
+    }
+    const ok = speakText(text)
+    setSpeaking(ok)
+    if (!ok) setToast('この端末では読み上げできません')
   }
 
   return (
@@ -112,6 +139,14 @@ export function TextRecognitionBottomSheet({
         )}
         <button type="button" className="chip" onClick={() => void handleCopy()} disabled={isProcessing || !text}>
           コピー
+        </button>
+        <button
+          type="button"
+          className={`chip ${speaking ? 'active' : ''}`}
+          onClick={handleSpeak}
+          disabled={isProcessing || !text || !speechOk}
+        >
+          {speaking ? '停止' : '読み上げ'}
         </button>
         <button type="button" className="chip" onClick={() => void handleShare()} disabled={isProcessing || !text}>
           共有

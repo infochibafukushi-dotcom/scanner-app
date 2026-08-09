@@ -11,7 +11,7 @@ export function CorrectedPreview({ page, compact = false }: CorrectedPreviewProp
   const [imageUrl, setImageUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const imageKey = `${page.id}:${page.dataUrl.length}:${page.rotation}:${page.filter}:${page.clean}:${page.paperSize}:${JSON.stringify(page.corners)}`
+  const imageKey = `${page.id}:${page.dataUrl.length}:${page.rotation}:${page.filter}:${page.clean}:${page.flattenBook}:${page.paperSize}:${JSON.stringify(page.corners)}`
 
   useEffect(() => {
     let cancelled = false

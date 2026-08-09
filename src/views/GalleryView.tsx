@@ -24,6 +24,7 @@ type Props = {
   onReorder: (pages: ScanPage[]) => void
   onRetake: (pageId: string) => void
   onDelete: (pageId: string) => void
+  onSplitPage: (pageId: string) => void
   onAddPages: () => void
   onSave: () => void
   onNewDocument: () => void
@@ -38,6 +39,7 @@ export function GalleryView({
   onReorder,
   onRetake,
   onDelete,
+  onSplitPage,
   onAddPages,
   onSave,
   onNewDocument
@@ -131,6 +133,15 @@ export function GalleryView({
             }}
           >
             撮り直し
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (menuPageId) onSplitPage(menuPageId)
+              setMenuPageId(null)
+            }}
+          >
+            左右に分割（見開き）
           </button>
           <button
             type="button"

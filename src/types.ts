@@ -52,7 +52,10 @@ export type ScanPage = {
   cornerConfidence?: number
   rotation: number
   filter: FilterMode
+  /** Speckle / handwriting cleanup + stronger sharpen (vFlat Clean寄せ). */
   clean: boolean
+  /** Approximate book-page curve flatten after perspective warp. */
+  flattenBook: boolean
   paperSize: PaperSize
   /** @deprecated Migrated into paperSize on load. */
   paperRatio?: PaperRatio
