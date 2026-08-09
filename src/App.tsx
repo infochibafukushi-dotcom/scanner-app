@@ -26,6 +26,8 @@ import { downloadTextFile, downloadWordFile } from './utils/textExport'
 import { CameraView } from './views/CameraView'
 import { EditView } from './views/EditView'
 import { GalleryView } from './views/GalleryView'
+import { OnboardingView } from './views/OnboardingView'
+import { isOnboardingComplete, markOnboardingComplete } from './utils/onboardingStorage'
 import './redesign.css'
 
 type HighResShots = { base: string; tiles: Record<HighResTileId, string> }
@@ -85,6 +87,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('camera')
   const [pages, setPages] = useState<ScanPage[]>([])
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null)
+  const [showOnboarding, setShowOnboarding] = useState(() => !isOnboardingComplete())
   const [saveSheetOpen, setSaveSheetOpen] = useState(false)
   const [textSheetOpen, setTextSheetOpen] = useState(false)
   const [replacePageId, setReplacePageId] = useState<string | null>(null)
@@ -117,12 +120,19 @@ export default function App() {
     []
   )
 
-  const { saveStatus, storageWarning, restoreMessage, startNewDocument } = useDocumentStorage({
+  const { saveStatus, storageWarning, restoreMessage, hydrated, startNewDocument } = useDocumentStorage({
     pages,
     selectedId: selectedPageId,
     fileName,
     onRestore: handleRestore
   })
+
+  // Existing saved documents take priority over first-launch onboarding.
+  useEffect(() => {
+    if (!hydrated || !showOnboarding || pages.length === 0) return
+    markOnboardingComplete()
+    setShowOnboarding(false)
+  }, [hydrated, pages.length, showOnboarding])
 
   const selectedPage = useMemo(
     () => pages.find((page) => page.id === selectedPageId) ?? null,
@@ -546,6 +556,21 @@ export default function App() {
     setEditTool('crop')
     setTextSheetOpen(false)
     setViewMode('edit')
+  }
+
+  if (!hydrated) {
+    return <div className="app-shell redesign-shell mode-boot" aria-busy="true" />
+  }
+
+  if (showOnboarding && pages.length === 0) {
+    return (
+      <OnboardingView
+        onComplete={() => {
+          setShowOnboarding(false)
+          setViewMode('camera')
+        }}
+      />
+    )
   }
 
   return (

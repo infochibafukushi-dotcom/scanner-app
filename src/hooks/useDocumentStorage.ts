@@ -30,6 +30,7 @@ export const useDocumentStorage = ({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [storageWarning, setStorageWarning] = useState<string | null>(null)
   const [restoreMessage, setRestoreMessage] = useState<string | null>(null)
+  const [hydrated, setHydrated] = useState(false)
   const readyRef = useRef(false)
   const hydratedRef = useRef(false)
   const pagesRef = useRef(pages)
@@ -46,6 +47,7 @@ export const useDocumentStorage = ({
         setStorageWarning('自動保存を利用できません')
         readyRef.current = true
         hydratedRef.current = true
+        setHydrated(true)
         return
       }
       try {
@@ -71,6 +73,7 @@ export const useDocumentStorage = ({
         if (!cancelled) {
           readyRef.current = true
           hydratedRef.current = true
+          setHydrated(true)
         }
       }
     })()
@@ -146,6 +149,7 @@ export const useDocumentStorage = ({
     saveStatus,
     storageWarning,
     restoreMessage,
+    hydrated,
     dismissRestoreMessage: () => setRestoreMessage(null),
     startNewDocument
   }
