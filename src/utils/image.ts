@@ -1,4 +1,5 @@
 import type { FilterMode, Point, ScanPage } from '../types'
+import { applyAspectToSize, resolveTargetAspect } from './paper'
 
 /** Purpose-specific max side lengths to balance quality and mobile memory. */
 export const RENDER_MAX = {
@@ -403,7 +404,8 @@ const sampleBilinear = (
 const warpPerspective = (
   sourceCanvas: HTMLCanvasElement,
   corners: [Point, Point, Point, Point],
-  maxSide: number = RENDER_MAX.export
+  maxSide: number = RENDER_MAX.export,
+  paperRatio: ScanPage['paperRatio'] = 'auto'
 ) => {
   const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true })
   if (!sourceCtx) throw new Error('Canvas context could not be created.')
@@ -416,6 +418,9 @@ const warpPerspective = (
   const [topLeft, topRight, bottomRight, bottomLeft] = sourcePoints
   let outputWidth = Math.max(distance(topLeft, topRight), distance(bottomLeft, bottomRight))
   let outputHeight = Math.max(distance(topLeft, bottomLeft), distance(topRight, bottomRight))
+
+  const targetAspect = resolveTargetAspect(paperRatio, corners)
+  ;({ width: outputWidth, height: outputHeight } = applyAspectToSize(outputWidth, outputHeight, targetAspect))
 
   const scale = Math.min(1, maxSide / Math.max(outputWidth, outputHeight))
   outputWidth = Math.max(1, Math.round(outputWidth * scale))
@@ -498,7 +503,7 @@ export const renderScanPage = async (
   enableHighQuality(sourceCtx)
   sourceCtx.drawImage(sourceImage, 0, 0)
 
-  const correctedCanvas = warpPerspective(sourceCanvas, page.corners, maxSide)
+  const correctedCanvas = warpPerspective(sourceCanvas, page.corners, maxSide, page.paperRatio ?? 'auto')
   const correctedCtx = correctedCanvas.getContext('2d')
   if (!correctedCtx) throw new Error('Canvas context could not be created.')
   enhanceDocument(correctedCtx, correctedCanvas.width, correctedCanvas.height)

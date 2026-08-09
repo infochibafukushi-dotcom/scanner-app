@@ -1,4 +1,4 @@
-import { ChangeEvent, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { CameraCapture } from './components/CameraCapture'
 import { CornerEditor } from './components/CornerEditor'
 import { CorrectedPreview } from './components/CorrectedPreview'
@@ -6,11 +6,21 @@ import { HighResCapture } from './components/HighResCapture'
 import { HighResPreview } from './components/HighResPreview'
 import { OcrTextPanel } from './components/OcrTextPanel'
 import { PreviewModal } from './components/PreviewModal'
+import { ReplacePreview } from './components/ReplacePreview'
 import { TranslationPanel } from './components/TranslationPanel'
-import { invalidateOcrForImageChange, type AppTab, type FilterMode, type HighResTileId, type ScanPage } from './types'
+import {
+  invalidateOcrForImageChange,
+  type AppTab,
+  type EditTool,
+  type FilterMode,
+  type HighResTileId,
+  type PaperRatio,
+  type ScanPage
+} from './types'
 import { detectDocumentCorners } from './utils/corners'
 import { RENDER_MAX, renderScanPage } from './utils/image'
 import { collectPageTexts, recognizePage } from './utils/ocr'
+import { PAPER_OPTIONS } from './utils/paper'
 import { buildPdfBlob, downloadPdf } from './utils/pdf'
 import { sharePagesWithGpt } from './utils/share'
 import { stitchHighRes } from './utils/highResStitch'
@@ -19,34 +29,53 @@ import { downloadTextFile, downloadWordFile } from './utils/textExport'
 type PreviewIntent = 'preview' | 'save' | 'share' | 'text' | 'word'
 type HighResShots = { base: string; tiles: Record<HighResTileId, string> }
 type StitchPreview = { dataUrl: string; warnings: string[]; qualityFailed: boolean; failedTiles: HighResTileId[] }
+type UndoState = { page: ScanPage; index: number; message: string }
 
 const initialFileName = () => {
   const date = new Date()
   return `scan-${date.getFullYear()}${`${date.getMonth() + 1}`.padStart(2, '0')}${`${date.getDate()}`.padStart(2, '0')}-${`${date.getHours()}`.padStart(2, '0')}${`${date.getMinutes()}`.padStart(2, '0')}.pdf`
 }
 
-const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-  const reader = new FileReader()
-  reader.onload = () => resolve(String(reader.result))
-  reader.onerror = reject
-  reader.readAsDataURL(file)
-})
+const readAsDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
 
 const makePage = async (dataUrl: string, name: string): Promise<ScanPage> => {
   const detection = await detectDocumentCorners(dataUrl)
-  return { id: crypto.randomUUID(), name, dataUrl, corners: detection.corners, cornerDetection: detection.detected ? 'auto' : 'fallback', rotation: 0, filter: 'color', clean: false, ocrStatus: 'idle', translationStatus: 'idle' }
+  return {
+    id: crypto.randomUUID(),
+    name,
+    dataUrl,
+    corners: detection.corners,
+    cornerDetection: detection.detected ? 'auto' : 'fallback',
+    rotation: 0,
+    filter: 'color',
+    clean: false,
+    paperRatio: 'auto',
+    ocrStatus: 'idle',
+    translationStatus: 'idle'
+  }
 }
 
-const applyOcrUpdates = (pages: ScanPage[], updates: { index: number; text: string }[]) => pages.map((page, index) => {
-  const update = updates.find((item) => item.index === index)
-  return update ? { ...page, ocrText: update.text, ocrStatus: 'done' as const, ocrError: undefined } : page
-})
+const applyOcrUpdates = (pages: ScanPage[], updates: { index: number; text: string }[]) =>
+  pages.map((page, index) => {
+    const update = updates.find((item) => item.index === index)
+    return update ? { ...page, ocrText: update.text, ocrStatus: 'done' as const, ocrError: undefined } : page
+  })
 
 const filters: { key: FilterMode; label: string }[] = [
-  { key: 'auto', label: '自動' }, { key: 'color', label: 'カラー' }, { key: 'gray', label: 'グレー' }, { key: 'bw', label: '白黒' }
+  { key: 'auto', label: '自動' },
+  { key: 'color', label: 'カラー' },
+  { key: 'gray', label: 'グレー' },
+  { key: 'bw', label: '白黒' }
 ]
 
 const filterLabel = (filter: FilterMode) => filters.find((item) => item.key === filter)?.label ?? 'カラー'
+
 const downloadBlob = (blob: Blob, name: string) => {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -61,6 +90,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tab, setTab] = useState<AppTab>('capture')
   const [cameraOpen, setCameraOpen] = useState(false)
+  const [replacePageId, setReplacePageId] = useState<string | null>(null)
+  const [pendingReplaceUrl, setPendingReplaceUrl] = useState<string | null>(null)
   const [saveSheetOpen, setSaveSheetOpen] = useState(false)
   const [isBusy, setIsBusy] = useState(false)
   const [panelBusy, setPanelBusy] = useState(false)
@@ -78,20 +109,87 @@ export default function App() {
   const [stitchProgress, setStitchProgress] = useState('')
   const [stitchPreview, setStitchPreview] = useState<StitchPreview | undefined>()
   const [stitchFailure, setStitchFailure] = useState<{ message: string; failedTiles: HighResTileId[] } | undefined>()
+  const [editTool, setEditTool] = useState<EditTool>('crop')
+  const [undo, setUndo] = useState<UndoState | null>(null)
   const cornerEditorRef = useRef<HTMLDivElement | null>(null)
   const translationPanelRef = useRef<HTMLDivElement | null>(null)
+  const pagesRef = useRef(pages)
+  pagesRef.current = pages
+
   const selectedPage = useMemo(() => pages.find((page) => page.id === selectedId) ?? null, [pages, selectedId])
-  const selectedIndex = useMemo(() => selectedPage ? pages.findIndex((page) => page.id === selectedPage.id) : -1, [pages, selectedPage])
+  const selectedIndex = useMemo(
+    () => (selectedPage ? pages.findIndex((page) => page.id === selectedPage.id) : -1),
+    [pages, selectedPage]
+  )
+  const replacePage = useMemo(() => pages.find((page) => page.id === replacePageId) ?? null, [pages, replacePageId])
   const anyBusy = isBusy || panelBusy || Boolean(stitchProgress)
+
+  useEffect(() => {
+    if (!undo) return
+    const timer = window.setTimeout(() => setUndo(null), 4500)
+    return () => window.clearTimeout(timer)
+  }, [undo])
 
   const appendPage = (page: ScanPage) => {
     setPages((current) => [...current, page])
     setSelectedId(page.id)
   }
+
   const addCapturedPage = async (dataUrl: string) => {
+    if (replacePageId) {
+      setPendingReplaceUrl(dataUrl)
+      setCameraOpen(false)
+      return
+    }
     setIsBusy(true)
-    try { appendPage(await makePage(dataUrl, `撮影-${pages.length + 1}`)); setTab('edit') } finally { setIsBusy(false) }
+    try {
+      const page = await makePage(dataUrl, `撮影-${pagesRef.current.length + 1}`)
+      appendPage(page)
+    } finally {
+      setIsBusy(false)
+    }
   }
+
+  const closeCamera = () => {
+    const wasReplace = Boolean(replacePageId)
+    setCameraOpen(false)
+    setReplacePageId(null)
+    if (wasReplace) return
+    const count = pagesRef.current.length
+    if (count <= 0) {
+      setTab('capture')
+      return
+    }
+    setTab(count <= 1 ? 'edit' : 'pages')
+  }
+
+  const startRetake = (pageId: string) => {
+    setReplacePageId(pageId)
+    setPendingReplaceUrl(null)
+    setCameraOpen(true)
+  }
+
+  const confirmReplace = async () => {
+    if (!replacePageId || !pendingReplaceUrl) return
+    setIsBusy(true)
+    try {
+      const detection = await detectDocumentCorners(pendingReplaceUrl)
+      updatePageImage(replacePageId, (page) => ({
+        ...page,
+        dataUrl: pendingReplaceUrl,
+        corners: detection.corners,
+        cornerDetection: detection.detected ? 'auto' : 'fallback',
+        rotation: 0
+      }))
+      setSelectedId(replacePageId)
+      setTab('edit')
+    } finally {
+      setIsBusy(false)
+      setPendingReplaceUrl(null)
+      setReplacePageId(null)
+    }
+  }
+
   const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
     if (!files.length) return
@@ -101,134 +199,738 @@ export default function App() {
       setPages((current) => [...current, ...nextPages])
       setSelectedId(nextPages[0]?.id ?? null)
       setTab('pages')
-    } finally { setIsBusy(false); event.target.value = '' }
+    } finally {
+      setIsBusy(false)
+      event.target.value = ''
+    }
   }
-  const updatePage = (pageId: string, updater: (page: ScanPage) => ScanPage) => setPages((current) => current.map((page) => page.id === pageId ? updater(page) : page))
-  const updatePageImage = (pageId: string, updater: (page: ScanPage) => ScanPage) => updatePage(pageId, (page) => invalidateOcrForImageChange(updater(page)))
-  const removePage = (pageId: string) => setPages((current) => {
-    const next = current.filter((page) => page.id !== pageId)
-    if (selectedId === pageId) setSelectedId(next[0]?.id ?? null)
-    return next
-  })
-  const movePage = (pageId: string, direction: -1 | 1) => setPages((current) => {
-    const index = current.findIndex((page) => page.id === pageId)
-    const target = index + direction
-    if (index < 0 || target < 0 || target >= current.length) return current
-    const next = [...current]; const [page] = next.splice(index, 1); next.splice(target, 0, page); return next
-  })
+
+  const updatePage = (pageId: string, updater: (page: ScanPage) => ScanPage) =>
+    setPages((current) => current.map((page) => (page.id === pageId ? updater(page) : page)))
+
+  const updatePageImage = (pageId: string, updater: (page: ScanPage) => ScanPage) =>
+    updatePage(pageId, (page) => invalidateOcrForImageChange(updater(page)))
+
+  const removePage = (pageId: string, confirm = true) => {
+    const index = pages.findIndex((page) => page.id === pageId)
+    if (index < 0) return
+    if (confirm && !window.confirm(`${index + 1}ページ目を削除しますか？`)) return
+    const removed = pages[index]
+    setPages((current) => {
+      const next = current.filter((page) => page.id !== pageId)
+      if (selectedId === pageId) {
+        const fallback = next[index] ?? next[index - 1] ?? null
+        setSelectedId(fallback?.id ?? null)
+      }
+      return next
+    })
+    setUndo({ page: removed, index, message: `${index + 1}ページ目を削除しました` })
+  }
+
+  const undoDelete = () => {
+    if (!undo) return
+    setPages((current) => {
+      const next = [...current]
+      next.splice(Math.min(undo.index, next.length), 0, undo.page)
+      return next
+    })
+    setSelectedId(undo.page.id)
+    setUndo(null)
+  }
+
+  const movePage = (pageId: string, direction: -1 | 1) =>
+    setPages((current) => {
+      const index = current.findIndex((page) => page.id === pageId)
+      const target = index + direction
+      if (index < 0 || target < 0 || target >= current.length) return current
+      const next = [...current]
+      const [page] = next.splice(index, 1)
+      next.splice(target, 0, page)
+      return next
+    })
+
   const redetectCorners = async (page: ScanPage) => {
     setDetectingId(page.id)
     try {
       const detection = await detectDocumentCorners(page.dataUrl)
-      updatePageImage(page.id, (current) => ({ ...current, corners: detection.corners, cornerDetection: detection.detected ? 'auto' : 'fallback' }))
+      updatePageImage(page.id, (current) => ({
+        ...current,
+        corners: detection.corners,
+        cornerDetection: detection.detected ? 'auto' : 'fallback'
+      }))
       if (!detection.detected) window.alert('書類の輪郭を自動判定できませんでした。青い四隅を手動で合わせてください。')
-    } finally { setDetectingId(null) }
+    } finally {
+      setDetectingId(null)
+    }
   }
-  const openPreview = (intent: PreviewIntent) => { if (pages.length) { setPreviewIntent(intent); setOcrStatus(''); setPreviewOpen(true); setSaveSheetOpen(false) } }
+
+  const openPreview = (intent: PreviewIntent) => {
+    if (!pages.length) return
+    setPreviewIntent(intent)
+    setOcrStatus('')
+    setPreviewOpen(true)
+    setSaveSheetOpen(false)
+  }
+
   const performExportPdf = async () => {
     if (!pages.length) return
     setIsBusy(true)
-    try { await downloadPdf(pages, fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`); setPreviewOpen(false) }
-    catch (error) { console.error(error); window.alert('PDFの作成に失敗しました。四隅の位置を確認してください。') }
-    finally { setIsBusy(false) }
+    try {
+      await downloadPdf(pages, fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`)
+      setPreviewOpen(false)
+    } catch (error) {
+      console.error(error)
+      window.alert('PDFの作成に失敗しました。四隅の位置を確認してください。')
+    } finally {
+      setIsBusy(false)
+    }
   }
+
   const performSharePdf = async () => {
     if (!pages.length) return
     setIsBusy(true)
     try {
       const finalName = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`
       const file = new File([await buildPdfBlob(pages)], finalName, { type: 'application/pdf' })
-      if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: finalName }); setPreviewOpen(false); return }
-      await downloadPdf(pages, finalName); setPreviewOpen(false); window.alert('この端末ではファイル共有に対応していないため、PDFを保存しました。')
-    } catch (error) { if ((error as DOMException)?.name !== 'AbortError') { console.error(error); window.alert('共有に失敗しました。') } }
-    finally { setIsBusy(false) }
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: finalName })
+        setPreviewOpen(false)
+        return
+      }
+      await downloadPdf(pages, finalName)
+      setPreviewOpen(false)
+      window.alert('この端末ではファイル共有に対応していないため、PDFを保存しました。')
+    } catch (error) {
+      if ((error as DOMException)?.name !== 'AbortError') {
+        console.error(error)
+        window.alert('共有に失敗しました。')
+      }
+    } finally {
+      setIsBusy(false)
+    }
   }
+
   const ensureTextsForExport = async (progressPrefix: string) => {
-    const { texts, updates } = await collectPageTexts(pages, (current, total) => setOcrStatus(`${progressPrefix}\n${current} / ${total}ページ`))
+    const { texts, updates } = await collectPageTexts(pages, (current, total) =>
+      setOcrStatus(`${progressPrefix}\n${current} / ${total}ページ`)
+    )
     if (updates.length) setPages((current) => applyOcrUpdates(current, updates))
     return texts
   }
-  const performSaveText = async () => { setIsBusy(true); try { downloadTextFile(await ensureTextsForExport('文字を読み取っています…'), fileName); setPreviewOpen(false) } catch (error) { console.error(error); window.alert('テキスト保存に失敗しました。') } finally { setOcrStatus(''); setIsBusy(false) } }
-  const performSaveWord = async () => { setIsBusy(true); try { const texts = await ensureTextsForExport('文字を読み取っています…'); setOcrStatus('Wordファイルを作成しています…'); await downloadWordFile(texts, fileName); setPreviewOpen(false) } catch (error) { console.error(error); window.alert('Word保存に失敗しました。') } finally { setOcrStatus(''); setIsBusy(false) } }
+
+  const performSaveText = async () => {
+    setIsBusy(true)
+    try {
+      downloadTextFile(await ensureTextsForExport('文字を読み取っています…'), fileName)
+      setPreviewOpen(false)
+    } catch (error) {
+      console.error(error)
+      window.alert('テキスト保存に失敗しました。')
+    } finally {
+      setOcrStatus('')
+      setIsBusy(false)
+    }
+  }
+
+  const performSaveWord = async () => {
+    setIsBusy(true)
+    try {
+      const texts = await ensureTextsForExport('文字を読み取っています…')
+      setOcrStatus('Wordファイルを作成しています…')
+      await downloadWordFile(texts, fileName)
+      setPreviewOpen(false)
+    } catch (error) {
+      console.error(error)
+      window.alert('Word保存に失敗しました。')
+    } finally {
+      setOcrStatus('')
+      setIsBusy(false)
+    }
+  }
+
   const performSaveJpeg = async () => {
     if (!pages.length) return
     setIsBusy(true)
     try {
-      await Promise.all(pages.map(async (page, index) => {
-        const canvas = await renderScanPage(page, RENDER_MAX.export)
-        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.96))
-        if (!blob) throw new Error('JPEGを作成できませんでした。')
-        downloadBlob(blob, `${fileName.replace(/\.pdf$/i, '')}-${index + 1}.jpg`)
-      }))
+      await Promise.all(
+        pages.map(async (page, index) => {
+          const canvas = await renderScanPage(page, RENDER_MAX.export)
+          const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.96))
+          if (!blob) throw new Error('JPEGを作成できませんでした。')
+          downloadBlob(blob, `${fileName.replace(/\.pdf$/i, '')}-${index + 1}.jpg`)
+        })
+      )
       setSaveSheetOpen(false)
-    } catch (error) { console.error(error); window.alert('JPEG保存に失敗しました。') } finally { setIsBusy(false) }
+    } catch (error) {
+      console.error(error)
+      window.alert('JPEG保存に失敗しました。')
+    } finally {
+      setIsBusy(false)
+    }
   }
+
   const runPageOcr = async (page: ScanPage, force: boolean) => {
     if (anyBusy) return
-    setPanelBusy(true); setPageOcrStatus('文字を読み取っています…')
+    setPanelBusy(true)
+    setPageOcrStatus('文字を読み取っています…')
+    setEditTool('ocr')
     updatePage(page.id, (current) => ({ ...current, ocrStatus: 'processing', ocrError: undefined }))
     try {
-      const text = await recognizePage(page, (message, progress) => setPageOcrStatus(`文字を読み取っています…${progress > 0 ? ` ${Math.round(progress * 100)}%` : ''}\n${message}`))
-      updatePage(page.id, (current) => ({ ...current, ocrText: text, ocrStatus: 'done', ocrError: undefined, translationStatus: current.translationText || current.translationStatus === 'done' ? 'stale' : current.translationStatus }))
-    } catch (error) { console.error(error); updatePage(page.id, (current) => ({ ...current, ocrStatus: 'error', ocrError: '文字の読み取りに失敗しました。', ...(force ? { ocrText: undefined } : {}) })) }
-    finally { setPageOcrStatus(''); setPanelBusy(false) }
+      const text = await recognizePage(page, (message, progress) =>
+        setPageOcrStatus(`文字を読み取っています…${progress > 0 ? ` ${Math.round(progress * 100)}%` : ''}\n${message}`)
+      )
+      updatePage(page.id, (current) => ({
+        ...current,
+        ocrText: text,
+        ocrStatus: 'done',
+        ocrError: undefined,
+        translationStatus:
+          current.translationText || current.translationStatus === 'done' ? 'stale' : current.translationStatus
+      }))
+    } catch (error) {
+      console.error(error)
+      updatePage(page.id, (current) => ({
+        ...current,
+        ocrStatus: 'error',
+        ocrError: '文字の読み取りに失敗しました。',
+        ...(force ? { ocrText: undefined } : {})
+      }))
+    } finally {
+      setPageOcrStatus('')
+      setPanelBusy(false)
+    }
   }
+
   const handleShareGpt = async () => {
     if (!pages.length || anyBusy) return
-    setPanelBusy(true); setGptFallbackVisible(false); setPageOcrStatus('GPT共有のため文字を読み取っています…')
+    setPanelBusy(true)
+    setGptFallbackVisible(false)
+    setPageOcrStatus('GPT共有のため文字を読み取っています…')
     const workingPages = pages
     try {
-      const { texts, updates } = await collectPageTexts(workingPages, (current, total) => setPageOcrStatus(`GPT共有のため文字を読み取っています\n${current} / ${total}ページ`))
-      const nextPages = applyOcrUpdates(workingPages, updates); setPages(nextPages); setPageOcrStatus('共有準備中…')
+      const { texts, updates } = await collectPageTexts(workingPages, (current, total) =>
+        setPageOcrStatus(`GPT共有のため文字を読み取っています\n${current} / ${total}ページ`)
+      )
+      const nextPages = applyOcrUpdates(workingPages, updates)
+      setPages(nextPages)
+      setPageOcrStatus('共有準備中…')
       const result = await sharePagesWithGpt(nextPages, texts)
       if (result.type === 'clipboard') setGptFallbackVisible(true)
       else if (result.type === 'failed') window.alert(result.message || 'GPT共有に失敗しました。')
-    } catch (error) { if ((error as DOMException)?.name !== 'AbortError') { console.error(error); window.alert('GPT共有に失敗しました。') } }
-    finally { setPageOcrStatus(''); setPanelBusy(false) }
+    } catch (error) {
+      if ((error as DOMException)?.name !== 'AbortError') {
+        console.error(error)
+        window.alert('GPT共有に失敗しました。')
+      }
+    } finally {
+      setPageOcrStatus('')
+      setPanelBusy(false)
+    }
   }
-  const openTranslationPanel = () => { setTranslationOpenSignal((value) => value + 1); window.setTimeout(() => translationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50) }
-  const scrollToCorners = () => cornerEditorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  const requestHighRes = () => { setCameraOpen(false); setHighResShots(undefined); setHighResStartStep('base'); setHighResOpen(true) }
+
+  const openTranslationPanel = () => {
+    setEditTool('ocr')
+    setTranslationOpenSignal((value) => value + 1)
+    window.setTimeout(() => translationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50)
+  }
+
+  const requestHighRes = () => {
+    setCameraOpen(false)
+    setReplacePageId(null)
+    setHighResShots(undefined)
+    setHighResStartStep('base')
+    setHighResOpen(true)
+  }
+
   const completeHighRes = async (shots: HighResShots) => {
-    setHighResShots(shots); setHighResOpen(false); setStitchProgress('高精細画像を作成しています…')
+    setHighResShots(shots)
+    setHighResOpen(false)
+    setStitchProgress('高精細画像を作成しています…')
     try {
-      const result = await stitchHighRes({ baseDataUrl: shots.base, tiles: shots.tiles, onProgress: ({ stage, current, total }) => setStitchProgress(`高精細画像を作成しています…\n${stage} (${current}/${total})`) })
-      if (result.ok) setStitchPreview({ dataUrl: result.dataUrl, warnings: result.warnings, qualityFailed: result.warnings.length > 0, failedTiles: [] })
-      else setStitchFailure({ message: result.message, failedTiles: result.failedTiles })
-    } finally { setStitchProgress('') }
+      const result = await stitchHighRes({
+        baseDataUrl: shots.base,
+        tiles: shots.tiles,
+        onProgress: ({ stage, current, total }) => setStitchProgress(`高精細画像を作成しています…\n${stage} (${current}/${total})`)
+      })
+      if (result.ok) {
+        setStitchPreview({
+          dataUrl: result.dataUrl,
+          warnings: result.warnings,
+          qualityFailed: result.warnings.length > 0,
+          failedTiles: []
+        })
+      } else setStitchFailure({ message: result.message, failedTiles: result.failedTiles })
+    } finally {
+      setStitchProgress('')
+    }
   }
+
   const acceptHighRes = async () => {
     if (!stitchPreview) return
     setIsBusy(true)
-    try { appendPage(await makePage(stitchPreview.dataUrl, `高精細-${pages.length + 1}`)); setStitchPreview(undefined); setHighResShots(undefined); setTab('edit') } finally { setIsBusy(false) }
+    try {
+      appendPage(await makePage(stitchPreview.dataUrl, `高精細-${pages.length + 1}`))
+      setStitchPreview(undefined)
+      setHighResShots(undefined)
+      setTab(pages.length >= 1 ? 'pages' : 'edit')
+    } finally {
+      setIsBusy(false)
+    }
   }
+
   const reopenHighRes = (tiles?: HighResTileId[]) => {
     if (tiles?.length && highResShots) {
-      const nextTiles = { ...highResShots.tiles }; tiles.forEach((tile) => delete nextTiles[tile])
-      setHighResShots({ base: highResShots.base, tiles: nextTiles as Record<HighResTileId, string> }); setHighResStartStep(tiles[0])
-    } else { setHighResShots(undefined); setHighResStartStep('base') }
-    setStitchPreview(undefined); setStitchFailure(undefined); setHighResOpen(true)
+      const nextTiles = { ...highResShots.tiles }
+      tiles.forEach((tile) => delete nextTiles[tile])
+      setHighResShots({ base: highResShots.base, tiles: nextTiles as Record<HighResTileId, string> })
+      setHighResStartStep(tiles[0])
+    } else {
+      setHighResShots(undefined)
+      setHighResStartStep('base')
+    }
+    setStitchPreview(undefined)
+    setStitchFailure(undefined)
+    setHighResOpen(true)
   }
 
-  const renderPageList = () => <section className="page-list card"><div className="section-title-row"><h2>ページ</h2><span>{pages.length}枚</span></div>{!pages.length ? <div className="empty-state"><p>まだページがありません。</p><p>スキャンまたは写真を追加してください。</p></div> : <div className="thumbnail-list">{pages.map((page, index) => <button key={page.id} type="button" className={`thumbnail-card ${selectedId === page.id ? 'active' : ''}`} onClick={() => { setSelectedId(page.id); setTab('edit') }}><img src={page.dataUrl} alt={page.name} /><div className="thumbnail-meta"><strong>{index + 1}. {page.name}</strong><span>{filterLabel(page.filter)} {page.clean ? '・クリーン' : ''}</span><span>{page.cornerDetection === 'auto' ? '四隅: 自動' : page.cornerDetection === 'manual' ? '四隅: 手動' : '四隅: 要確認'}</span></div></button>)}</div>}</section>
+  const openCamera = () => {
+    setReplacePageId(null)
+    setPendingReplaceUrl(null)
+    setTab('capture')
+    setCameraOpen(true)
+  }
 
-  return <div className="app-shell">
-    <CameraCapture open={cameraOpen} onClose={() => setCameraOpen(false)} onCapture={(dataUrl) => void addCapturedPage(dataUrl)} onRequestHighRes={requestHighRes} />
-    <HighResCapture open={highResOpen} onClose={() => setHighResOpen(false)} onShotsReady={(shots) => void completeHighRes(shots)} initialShots={highResShots} startStep={highResStartStep} />
-    {stitchPreview && <HighResPreview {...stitchPreview} onAccept={() => void acceptHighRes()} onPartialRetake={(tiles) => reopenHighRes(tiles)} onFullRetake={() => reopenHighRes()} onClose={() => setStitchPreview(undefined)} />}
-    {stitchProgress && <div className="processing-overlay" role="status"><div>{stitchProgress}</div></div>}
-    {stitchFailure && <div className="dialog-scrim"><section className="failure-dialog"><h2>高精細画像を作成できませんでした</h2><p>{stitchFailure.message}</p><div><button type="button" className="primary-button" onClick={() => reopenHighRes(stitchFailure.failedTiles)}>撮り直す</button><button type="button" className="secondary-button" onClick={() => { void addCapturedPage(highResShots?.base ?? ''); setStitchFailure(undefined) }} disabled={!highResShots?.base}>通常スキャンで続ける</button></div></section></div>}
-    <PreviewModal open={previewOpen} pages={pages} fileName={fileName} intent={previewIntent} busy={isBusy} ocrStatus={ocrStatus} onClose={() => setPreviewOpen(false)} onSave={performExportPdf} onShare={performSharePdf} onSaveText={performSaveText} onSaveWord={performSaveWord} />
+  return (
+    <div className="app-shell">
+      <CameraCapture
+        open={cameraOpen}
+        onClose={closeCamera}
+        onCapture={(dataUrl) => void addCapturedPage(dataUrl)}
+        onRequestHighRes={requestHighRes}
+        pageCount={pages.length}
+        mode={replacePageId ? 'replace' : 'append'}
+      />
+      <HighResCapture
+        open={highResOpen}
+        onClose={() => setHighResOpen(false)}
+        onShotsReady={(shots) => void completeHighRes(shots)}
+        initialShots={highResShots}
+        startStep={highResStartStep}
+      />
+      {stitchPreview && (
+        <HighResPreview
+          {...stitchPreview}
+          onAccept={() => void acceptHighRes()}
+          onPartialRetake={(tiles) => reopenHighRes(tiles)}
+          onFullRetake={() => reopenHighRes()}
+          onClose={() => setStitchPreview(undefined)}
+        />
+      )}
+      {stitchProgress && (
+        <div className="processing-overlay" role="status">
+          <div>{stitchProgress}</div>
+        </div>
+      )}
+      {stitchFailure && (
+        <div className="dialog-scrim">
+          <section className="failure-dialog">
+            <h2>高精細画像を作成できませんでした</h2>
+            <p>{stitchFailure.message}</p>
+            <div>
+              <button type="button" className="primary-button" onClick={() => reopenHighRes(stitchFailure.failedTiles)}>
+                撮り直す
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  void addCapturedPage(highResShots?.base ?? '')
+                  setStitchFailure(undefined)
+                }}
+                disabled={!highResShots?.base}
+              >
+                通常スキャンで続ける
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {pendingReplaceUrl && replacePage && (
+        <ReplacePreview
+          oldUrl={replacePage.dataUrl}
+          newUrl={pendingReplaceUrl}
+          pageNumber={pages.findIndex((page) => page.id === replacePage.id) + 1}
+          onRetake={() => {
+            setPendingReplaceUrl(null)
+            setCameraOpen(true)
+          }}
+          onConfirm={() => void confirmReplace()}
+          onCancel={() => {
+            setPendingReplaceUrl(null)
+            setReplacePageId(null)
+          }}
+        />
+      )}
+      <PreviewModal
+        open={previewOpen}
+        pages={pages}
+        fileName={fileName}
+        intent={previewIntent}
+        busy={isBusy}
+        ocrStatus={ocrStatus}
+        onClose={() => setPreviewOpen(false)}
+        onSave={performExportPdf}
+        onShare={performSharePdf}
+        onSaveText={performSaveText}
+        onSaveWord={performSaveWord}
+      />
 
-    <header className="hero"><div><span className="badge">書類をすばやくデジタル化</span><h1>Scanner</h1><p>撮影したページを整えて、OCR・翻訳・各形式で保存できます。</p></div><div className="hero-actions"><button type="button" className="primary-button" onClick={() => setCameraOpen(true)}>＋ スキャン</button><label className="secondary-button file-button"><input type="file" accept="image/*" multiple onChange={(event) => void addFiles(event)} hidden />写真を追加</label></div></header>
+      <header className="hero">
+        <div>
+          <span className="badge">書類をすばやくデジタル化</span>
+          <h1>Scanner</h1>
+          <p>撮影 → ページ管理 → 編集 → 保存 の順で進めます。</p>
+        </div>
+        <div className="hero-actions">
+          <button type="button" className="primary-button" onClick={openCamera}>
+            ＋ スキャン
+          </button>
+          <label className="secondary-button file-button">
+            <input type="file" accept="image/*" multiple onChange={(event) => void addFiles(event)} hidden />
+            写真を追加
+          </label>
+        </div>
+      </header>
 
-    <main className="mobile-workspace">
-      {(tab === 'capture' || tab === 'pages') && renderPageList()}
-      {tab === 'edit' && (selectedPage ? <section className="workspace"><div className="card controls-card"><div className="section-title-row"><h2>編集</h2><span>{selectedPage.name}</span></div><div className="edit-controls"><div className="button-row wrap">{filters.map((filter) => <button key={filter.key} type="button" className={selectedPage.filter === filter.key ? 'chip active' : 'chip'} onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, filter: filter.key }))}>{filter.label}</button>)}</div><button type="button" className={selectedPage.clean ? 'chip active' : 'chip'} onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, clean: !page.clean }))}>クリーン {selectedPage.clean ? 'オン' : 'オフ'}</button><div className="button-row wrap"><button type="button" className="chip" onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation - 90 }))}>左回転</button><button type="button" className="chip" onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + 90 }))}>右回転</button><button type="button" className="chip" onClick={() => movePage(selectedPage.id, -1)}>前へ</button><button type="button" className="chip" onClick={() => movePage(selectedPage.id, 1)}>次へ</button><button type="button" className="chip danger" onClick={() => removePage(selectedPage.id)}>削除</button></div></div></div><div ref={cornerEditorRef}><CornerEditor imageUrl={selectedPage.dataUrl} filter={selectedPage.filter} clean={selectedPage.clean} corners={selectedPage.corners} detectionMode={selectedPage.cornerDetection} detecting={detectingId === selectedPage.id} onChange={(corners) => updatePageImage(selectedPage.id, (page) => ({ ...page, corners, cornerDetection: 'manual' }))} onRedetect={() => void redetectCorners(selectedPage)} /></div><CorrectedPreview page={selectedPage} /><OcrTextPanel page={selectedPage} pageIndex={Math.max(0, selectedIndex)} pageCount={pages.length} busy={panelBusy} statusMessage={pageOcrStatus} onTextChange={(text) => updatePage(selectedPage.id, (page) => ({ ...page, ocrText: text, ocrStatus: 'done', translationStatus: page.translationText || page.translationStatus === 'done' ? 'stale' : page.translationStatus }))} onRecognize={() => void runPageOcr(selectedPage, false)} onRerecognize={() => void runPageOcr(selectedPage, true)} onShareGpt={() => void handleShareGpt()} onOpenTranslation={openTranslationPanel} gptFallbackVisible={gptFallbackVisible} onDismissGptFallback={() => setGptFallbackVisible(false)} /><div ref={translationPanelRef}><TranslationPanel page={selectedPage} busy={panelBusy} openSignal={translationOpenSignal} onBusyChange={setPanelBusy} onUpdate={(updater) => updatePage(selectedPage.id, updater)} /></div></section> : <section className="card placeholder-card"><h2>ページを選んでください</h2><p>撮影した書類の補正、OCR、翻訳をここで行えます。</p></section>)}
-    </main>
+      <main className="mobile-workspace">
+        {(tab === 'capture' || tab === 'pages') && (
+          <section className="page-list card">
+            <div className="section-title-row">
+              <h2>ページ</h2>
+              <span>{pages.length}枚</span>
+            </div>
+            {!pages.length ? (
+              <div className="empty-state">
+                <p>まだページがありません。</p>
+                <p>下部の「撮影」からスキャンを開始してください。</p>
+                <button type="button" className="primary-button" onClick={openCamera}>
+                  撮影を開始
+                </button>
+              </div>
+            ) : (
+              <div className="page-grid">
+                {pages.map((page, index) => (
+                  <article key={page.id} className={`page-card ${selectedId === page.id ? 'active' : ''}`}>
+                    <button
+                      type="button"
+                      className="page-card-image"
+                      onClick={() => {
+                        setSelectedId(page.id)
+                        setTab('edit')
+                        setEditTool('crop')
+                      }}
+                    >
+                      <img src={page.dataUrl} alt={`ページ ${index + 1}`} />
+                      <strong>{index + 1}</strong>
+                    </button>
+                    <div className="page-card-actions">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedId(page.id)
+                          setTab('edit')
+                          setEditTool('crop')
+                        }}
+                      >
+                        編集
+                      </button>
+                      <button type="button" onClick={() => startRetake(page.id)}>
+                        撮り直し
+                      </button>
+                      <button type="button" className="danger" onClick={() => removePage(page.id)}>
+                        削除
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
-    {tab === 'edit' && selectedPage && <div className="edit-toolbar"><button type="button" onClick={scrollToCorners}>切抜き</button><button type="button" onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + 90 }))}>回転</button><button type="button" onClick={() => document.querySelector('.edit-controls')?.scrollIntoView({ behavior: 'smooth' })}>フィルター</button><button type="button" onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, clean: !page.clean }))}>補正</button><button type="button" onClick={() => void runPageOcr(selectedPage, false)}>OCR</button></div>}
-    {saveSheetOpen && <div className="sheet-scrim" onClick={() => setSaveSheetOpen(false)}><section className="save-sheet" onClick={(event) => event.stopPropagation()}><div className="sheet-handle" /><label className="field"><span>ファイル名</span><input value={fileName} onChange={(event) => setFileName(event.target.value)} /></label><div className="save-options"><button type="button" onClick={() => openPreview('save')} disabled={!pages.length || anyBusy}>PDF</button><button type="button" onClick={() => void performSaveJpeg()} disabled={!pages.length || anyBusy}>JPEG</button><button type="button" onClick={() => void performSaveText()} disabled={!pages.length || anyBusy}>TXT</button><button type="button" onClick={() => void performSaveWord()} disabled={!pages.length || anyBusy}>Word</button><button type="button" onClick={() => openPreview('share')} disabled={!pages.length || anyBusy}>共有</button><button type="button" onClick={() => { setSaveSheetOpen(false); void handleShareGpt() }} disabled={!pages.length || anyBusy}>GPT共有</button></div></section></div>}
-    <nav className="bottom-tabs" aria-label="主な操作"><button type="button" className={tab === 'capture' ? 'active' : ''} onClick={() => { setTab('capture'); setCameraOpen(true) }}>撮影</button><button type="button" className={tab === 'pages' ? 'active' : ''} onClick={() => setTab('pages')}>ページ</button><button type="button" className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>編集</button><button type="button" className={tab === 'save' ? 'active' : ''} onClick={() => { setTab('save'); setSaveSheetOpen(true) }}>保存</button></nav>
-  </div>
+        {tab === 'edit' &&
+          (selectedPage ? (
+            <section className="workspace">
+              <div className="card edit-header-card">
+                <div className="section-title-row">
+                  <button type="button" className="text-button" onClick={() => setTab('pages')}>
+                    ← ページ一覧
+                  </button>
+                  <h2>
+                    ページ {selectedIndex + 1} / {pages.length}
+                  </h2>
+                </div>
+                <div className="button-row wrap">
+                  <button type="button" className="chip" onClick={() => startRetake(selectedPage.id)}>
+                    撮り直し
+                  </button>
+                  <button type="button" className="chip danger" onClick={() => removePage(selectedPage.id)}>
+                    削除
+                  </button>
+                  <button type="button" className="chip" onClick={() => movePage(selectedPage.id, -1)}>
+                    前へ
+                  </button>
+                  <button type="button" className="chip" onClick={() => movePage(selectedPage.id, 1)}>
+                    次へ
+                  </button>
+                </div>
+              </div>
+
+              {(editTool === 'crop' || editTool === 'enhance') && (
+                <div ref={cornerEditorRef}>
+                  <CornerEditor
+                    imageUrl={selectedPage.dataUrl}
+                    filter={selectedPage.filter}
+                    clean={selectedPage.clean}
+                    corners={selectedPage.corners}
+                    detectionMode={selectedPage.cornerDetection}
+                    detecting={detectingId === selectedPage.id}
+                    onChange={(corners) =>
+                      updatePageImage(selectedPage.id, (page) => ({ ...page, corners, cornerDetection: 'manual' }))
+                    }
+                    onRedetect={() => void redetectCorners(selectedPage)}
+                  />
+                </div>
+              )}
+
+              {(editTool === 'crop' || editTool === 'enhance' || editTool === 'filter' || editTool === 'rotate') && (
+                <div className="card controls-card">
+                  {editTool === 'filter' && (
+                    <div className="button-row wrap">
+                      {filters.map((filter) => (
+                        <button
+                          key={filter.key}
+                          type="button"
+                          className={selectedPage.filter === filter.key ? 'chip active' : 'chip'}
+                          onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, filter: filter.key }))}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {editTool === 'rotate' && (
+                    <div className="button-row wrap">
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation - 90 }))}
+                      >
+                        左回転
+                      </button>
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + 90 }))}
+                      >
+                        右回転
+                      </button>
+                    </div>
+                  )}
+                  {(editTool === 'crop' || editTool === 'enhance') && (
+                    <>
+                      <label className="field">
+                        <span>用紙</span>
+                        <select
+                          className="target-select"
+                          value={selectedPage.paperRatio}
+                          onChange={(event) =>
+                            updatePageImage(selectedPage.id, (page) => ({
+                              ...page,
+                              paperRatio: event.target.value as PaperRatio
+                            }))
+                          }
+                        >
+                          {PAPER_OPTIONS.map((option) => (
+                            <option key={option.key} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className={selectedPage.clean ? 'chip active' : 'chip'}
+                        onClick={() => updatePageImage(selectedPage.id, (page) => ({ ...page, clean: !page.clean }))}
+                      >
+                        クリーン {selectedPage.clean ? 'オン' : 'オフ'}
+                      </button>
+                      <p className="helper-text">
+                        現在: {filterLabel(selectedPage.filter)} / 用紙{' '}
+                        {PAPER_OPTIONS.find((item) => item.key === selectedPage.paperRatio)?.label}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+
+              <CorrectedPreview page={selectedPage} />
+
+              {editTool === 'ocr' && (
+                <>
+                  <OcrTextPanel
+                    page={selectedPage}
+                    pageIndex={Math.max(0, selectedIndex)}
+                    pageCount={pages.length}
+                    busy={panelBusy}
+                    statusMessage={pageOcrStatus}
+                    onTextChange={(text) =>
+                      updatePage(selectedPage.id, (page) => ({
+                        ...page,
+                        ocrText: text,
+                        ocrStatus: 'done',
+                        translationStatus:
+                          page.translationText || page.translationStatus === 'done' ? 'stale' : page.translationStatus
+                      }))
+                    }
+                    onRecognize={() => void runPageOcr(selectedPage, false)}
+                    onRerecognize={() => void runPageOcr(selectedPage, true)}
+                    onShareGpt={() => void handleShareGpt()}
+                    onOpenTranslation={openTranslationPanel}
+                    gptFallbackVisible={gptFallbackVisible}
+                    onDismissGptFallback={() => setGptFallbackVisible(false)}
+                  />
+                  <div ref={translationPanelRef}>
+                    <TranslationPanel
+                      page={selectedPage}
+                      busy={panelBusy}
+                      openSignal={translationOpenSignal}
+                      onBusyChange={setPanelBusy}
+                      onUpdate={(updater) => updatePage(selectedPage.id, updater)}
+                    />
+                  </div>
+                </>
+              )}
+            </section>
+          ) : (
+            <section className="card placeholder-card">
+              <h2>ページを選んでください</h2>
+              <p>ページ一覧から編集したいページを選びます。</p>
+              <button type="button" className="primary-button" onClick={() => setTab('pages')}>
+                ページ一覧へ
+              </button>
+            </section>
+          ))}
+      </main>
+
+      {tab === 'edit' && selectedPage && (
+        <div className="edit-toolbar">
+          <button type="button" className={editTool === 'crop' ? 'active' : ''} onClick={() => setEditTool('crop')}>
+            切抜き
+          </button>
+          <button
+            type="button"
+            className={editTool === 'rotate' ? 'active' : ''}
+            onClick={() => {
+              setEditTool('rotate')
+              updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + 90 }))
+            }}
+          >
+            回転
+          </button>
+          <button type="button" className={editTool === 'filter' ? 'active' : ''} onClick={() => setEditTool('filter')}>
+            フィルター
+          </button>
+          <button type="button" className={editTool === 'enhance' ? 'active' : ''} onClick={() => setEditTool('enhance')}>
+            補正
+          </button>
+          <button
+            type="button"
+            className={editTool === 'ocr' ? 'active' : ''}
+            onClick={() => {
+              setEditTool('ocr')
+              void runPageOcr(selectedPage, false)
+            }}
+          >
+            OCR
+          </button>
+        </div>
+      )}
+
+      {undo && (
+        <div className="undo-toast">
+          <span>{undo.message}</span>
+          <button type="button" onClick={undoDelete}>
+            元に戻す
+          </button>
+        </div>
+      )}
+
+      {saveSheetOpen && (
+        <div className="sheet-scrim" onClick={() => setSaveSheetOpen(false)}>
+          <section className="save-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="sheet-handle" />
+            <label className="field">
+              <span>ファイル名</span>
+              <input value={fileName} onChange={(event) => setFileName(event.target.value)} />
+            </label>
+            <div className="save-options">
+              <button type="button" onClick={() => openPreview('save')} disabled={!pages.length || anyBusy}>
+                PDF
+              </button>
+              <button type="button" onClick={() => void performSaveJpeg()} disabled={!pages.length || anyBusy}>
+                JPEG
+              </button>
+              <button type="button" onClick={() => void performSaveText()} disabled={!pages.length || anyBusy}>
+                TXT
+              </button>
+              <button type="button" onClick={() => void performSaveWord()} disabled={!pages.length || anyBusy}>
+                Word
+              </button>
+              <button type="button" onClick={() => openPreview('share')} disabled={!pages.length || anyBusy}>
+                共有
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSaveSheetOpen(false)
+                  void handleShareGpt()
+                }}
+                disabled={!pages.length || anyBusy}
+              >
+                GPT共有
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      <nav className="bottom-tabs" aria-label="主な操作">
+        <button
+          type="button"
+          className={tab === 'capture' || cameraOpen ? 'active' : ''}
+          onClick={openCamera}
+        >
+          撮影
+        </button>
+        <button type="button" className={tab === 'pages' ? 'active' : ''} onClick={() => setTab('pages')}>
+          ページ
+          {pages.length > 0 && <span className="tab-badge">{pages.length}</span>}
+        </button>
+        <button type="button" className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>
+          編集
+        </button>
+        <button
+          type="button"
+          className={tab === 'save' ? 'active' : ''}
+          onClick={() => {
+            setTab('save')
+            setSaveSheetOpen(true)
+          }}
+        >
+          保存
+        </button>
+      </nav>
+    </div>
+  )
 }

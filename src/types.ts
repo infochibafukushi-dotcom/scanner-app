@@ -1,9 +1,11 @@
 export type FilterMode = 'auto' | 'color' | 'gray' | 'bw'
+export type PaperRatio = 'auto' | 'a4' | 'letter' | 'free'
 export type CornerDetectionMode = 'auto' | 'fallback' | 'manual'
 export type ProcessStatus = 'idle' | 'processing' | 'done' | 'error' | 'stale'
 export type HighResTileId = 'tl' | 'tr' | 'br' | 'bl'
 export type HighResCaptureStep = 'base' | HighResTileId
 export type AppTab = 'capture' | 'pages' | 'edit' | 'save'
+export type EditTool = 'crop' | 'rotate' | 'filter' | 'enhance' | 'ocr'
 
 export type Point = {
   x: number
@@ -19,6 +21,7 @@ export type ScanPage = {
   rotation: number
   filter: FilterMode
   clean: boolean
+  paperRatio: PaperRatio
   ocrText?: string
   ocrStatus?: ProcessStatus
   ocrError?: string
