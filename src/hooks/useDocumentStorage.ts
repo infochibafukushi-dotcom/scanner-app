@@ -59,7 +59,7 @@ export const useDocumentStorage = ({
             selectedId: restored.meta.selectedId,
             fileName: restored.meta.fileName
           })
-          setRestoreMessage(`前回の作業を復元しました（${restored.pages.length}ページ）`)
+          setRestoreMessage(`前回の${restored.pages.length}ページを復元しました`)
           window.setTimeout(() => setRestoreMessage(null), 4000)
           setSaveStatus('saved')
         }

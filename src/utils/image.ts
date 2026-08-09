@@ -5,6 +5,7 @@ import { applyAspectToSize, resolveTargetAspect } from './paper'
 export const RENDER_MAX = {
   preview: 1800,
   editor: 2400,
+  gallery: 800,
   ocr: 2400,
   export: 3400,
   highRes: 4000

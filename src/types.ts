@@ -13,7 +13,9 @@ export type CornerDetectionMode = 'auto' | 'fallback' | 'manual'
 export type ProcessStatus = 'idle' | 'processing' | 'done' | 'error' | 'stale'
 export type HighResTileId = 'tl' | 'tr' | 'br' | 'bl'
 export type HighResCaptureStep = 'base' | HighResTileId
+/** @deprecated Replaced by ViewMode for the linear camera → gallery → edit flow. */
 export type AppTab = 'capture' | 'pages' | 'edit' | 'save'
+export type ViewMode = 'camera' | 'gallery' | 'edit'
 export type EditTool = 'crop' | 'rotate' | 'filter' | 'enhance' | 'ocr'
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'unavailable' | 'error'
 
