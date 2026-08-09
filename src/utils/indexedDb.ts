@@ -1,4 +1,5 @@
 import type { FilterMode, PaperSize, Point, ProcessStatus, ScanPage } from '../types'
+import { normalizeFilter } from '../types'
 import { migratePaperSize } from './paper'
 
 export const DB_NAME = 'scanner-app'
@@ -133,7 +134,7 @@ const toPageRecord = (page: ScanPage, documentId: string): PageRecord => ({
   cornerDetection: page.cornerDetection,
   cornerConfidence: page.cornerConfidence,
   rotation: page.rotation,
-  filter: page.filter,
+  filter: normalizeFilter(page.filter),
   clean: page.clean,
   paperSize: migratePaperSize(page),
   ocrText: page.ocrText,
@@ -154,7 +155,7 @@ const fromPageRecord = (record: PageRecord, dataUrl: string): ScanPage => ({
   cornerDetection: record.cornerDetection,
   cornerConfidence: record.cornerConfidence,
   rotation: record.rotation,
-  filter: record.filter,
+  filter: normalizeFilter(record.filter),
   clean: record.clean,
   paperSize: migratePaperSize(record),
   ocrText: record.ocrText,

@@ -1,4 +1,4 @@
-import type { FilterMode } from '../types'
+import { UI_FILTER_OPTIONS, normalizeFilter, type FilterMode } from '../types'
 
 type Props = {
   filter: FilterMode
@@ -7,22 +7,18 @@ type Props = {
   onToggleClean: () => void
 }
 
-const filters: { key: FilterMode; label: string }[] = [
-  { key: 'auto', label: '自動' },
-  { key: 'color', label: 'カラー' },
-  { key: 'gray', label: 'グレー' },
-  { key: 'bw', label: '白黒' }
-]
-
 export function FilterToolbar({ filter, clean, onFilter, onToggleClean }: Props) {
+  const current = normalizeFilter(filter)
+  const hint = UI_FILTER_OPTIONS.find((item) => item.key === current)?.hint ?? ''
+
   return (
-    <div className="filter-toolbar">
+    <div className="filter-toolbar compact">
       <div className="chip-scroll">
-        {filters.map((item) => (
+        {UI_FILTER_OPTIONS.map((item) => (
           <button
             key={item.key}
             type="button"
-            className={filter === item.key ? 'chip active' : 'chip'}
+            className={current === item.key ? 'chip active' : 'chip'}
             onClick={() => onFilter(item.key)}
           >
             {item.label}
@@ -32,6 +28,7 @@ export function FilterToolbar({ filter, clean, onFilter, onToggleClean }: Props)
           Clean {clean ? 'ON' : 'OFF'}
         </button>
       </div>
+      {hint && <p className="filter-hint">{hint}</p>}
     </div>
   )
 }

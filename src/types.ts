@@ -1,4 +1,17 @@
 export type FilterMode = 'auto' | 'color' | 'gray' | 'bw'
+
+/** UI exposes auto/color/gray only; legacy `bw` maps to gray. */
+export const normalizeFilter = (filter: unknown): FilterMode => {
+  if (filter === 'bw') return 'gray'
+  if (filter === 'auto' || filter === 'color' || filter === 'gray') return filter
+  return 'color'
+}
+
+export const UI_FILTER_OPTIONS: { key: Exclude<FilterMode, 'bw'>; label: string; hint: string }[] = [
+  { key: 'auto', label: '自動', hint: '書類を読みやすく自動補正' },
+  { key: 'color', label: 'カラー', hint: '元の色を自然に残す' },
+  { key: 'gray', label: 'グレー', hint: '色を消して文字を見やすく' }
+]
 /** @deprecated Use PaperSize. Kept for migration of older persisted data. */
 export type PaperRatio = 'auto' | 'a4' | 'letter' | 'free'
 export type PaperSize =

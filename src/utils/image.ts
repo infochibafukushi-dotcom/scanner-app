@@ -48,36 +48,6 @@ const percentileFromHistogram = (histogram: Uint32Array, total: number, percenti
   return 255
 }
 
-const otsuThreshold = (histogram: Uint32Array, total: number) => {
-  let weightedSum = 0
-  for (let i = 0; i < 256; i += 1) weightedSum += i * histogram[i]
-
-  let backgroundWeight = 0
-  let backgroundSum = 0
-  let bestVariance = -1
-  let bestThreshold = 160
-
-  for (let threshold = 0; threshold < 256; threshold += 1) {
-    backgroundWeight += histogram[threshold]
-    if (backgroundWeight === 0) continue
-
-    const foregroundWeight = total - backgroundWeight
-    if (foregroundWeight === 0) break
-
-    backgroundSum += threshold * histogram[threshold]
-    const backgroundMean = backgroundSum / backgroundWeight
-    const foregroundMean = (weightedSum - backgroundSum) / foregroundWeight
-    const variance = backgroundWeight * foregroundWeight * (backgroundMean - foregroundMean) ** 2
-
-    if (variance > bestVariance) {
-      bestVariance = variance
-      bestThreshold = threshold
-    }
-  }
-
-  return bestThreshold
-}
-
 const boxBlur = (input: Uint8Array, width: number, height: number, radius: number) => {
   const horizontal = new Float32Array(input.length)
   const output = new Uint8Array(input.length)
@@ -286,8 +256,10 @@ const applyAutoEnhance = (ctx: CanvasRenderingContext2D, width: number, height: 
 }
 
 const applyFilter = (ctx: CanvasRenderingContext2D, filter: FilterMode, width: number, height: number) => {
-  if (filter === 'color') return
-  if (filter === 'auto') { applyAutoEnhance(ctx, width, height); return }
+  // Legacy `bw` is treated as gray for compatibility with old saves.
+  const mode = filter === 'bw' ? 'gray' : filter
+  if (mode === 'color') return
+  if (mode === 'auto') { applyAutoEnhance(ctx, width, height); return }
   const imageData = ctx.getImageData(0, 0, width, height)
   const { data } = imageData
   const total = width * height
@@ -301,18 +273,14 @@ const applyFilter = (ctx: CanvasRenderingContext2D, filter: FilterMode, width: n
   const low = percentileFromHistogram(histogram, total, 0.02)
   const high = percentileFromHistogram(histogram, total, 0.98)
   const range = Math.max(28, high - low)
-  const normalizedHistogram = new Uint32Array(256)
   const normalized = new Uint8Array(total)
   for (let pixel = 0; pixel < total; pixel += 1) {
     const stretched = clamp(((luminance[pixel] - low) / range) * 255, 0, 255)
     const gammaCorrected = 255 * Math.pow(stretched / 255, 0.94)
-    const value = Math.round(clamp((gammaCorrected - 128) * 1.06 + 128, 0, 255))
-    normalized[pixel] = value
-    normalizedHistogram[value] += 1
+    normalized[pixel] = Math.round(clamp((gammaCorrected - 128) * 1.06 + 128, 0, 255))
   }
-  const threshold = otsuThreshold(normalizedHistogram, total)
   for (let pixel = 0, i = 0; i < data.length; i += 4, pixel += 1) {
-    const value = filter === 'gray' ? normalized[pixel] : normalized[pixel] > threshold ? 255 : 0
+    const value = normalized[pixel]
     data[i] = value
     data[i + 1] = value
     data[i + 2] = value
@@ -515,7 +483,7 @@ export const renderScanPage = async (
   enhanceDocument(correctedCtx, correctedCanvas.width, correctedCanvas.height)
   if (page.clean) applyClean(correctedCtx, correctedCanvas.width, correctedCanvas.height)
   applyFilter(correctedCtx, page.filter, correctedCanvas.width, correctedCanvas.height)
-  if (page.filter !== 'bw') applyMildUnsharp(correctedCtx, correctedCanvas.width, correctedCanvas.height)
+  applyMildUnsharp(correctedCtx, correctedCanvas.width, correctedCanvas.height)
 
   const rotation = normalizeRotation(page.rotation)
   if (rotation === 0) return correctedCanvas

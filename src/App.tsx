@@ -8,6 +8,7 @@ import { Toast } from './components/Toast'
 import { useDocumentStorage } from './hooks/useDocumentStorage'
 import {
   invalidateOcrForImageChange,
+  normalizeFilter,
   type EditTool,
   type FilterMode,
   type HighResTileId,
@@ -604,7 +605,9 @@ export default function App() {
           }
           onRedetect={() => void redetectCorners(selectedPage)}
           onPaperSize={(paperSize: PaperSize) => updatePageImage(selectedPage.id, (page) => ({ ...page, paperSize }))}
-          onFilter={(filter: FilterMode) => updatePageImage(selectedPage.id, (page) => ({ ...page, filter }))}
+          onFilter={(filter: FilterMode) =>
+            updatePageImage(selectedPage.id, (page) => ({ ...page, filter: normalizeFilter(filter) }))
+          }
           onToggleClean={() => updatePageImage(selectedPage.id, (page) => ({ ...page, clean: !page.clean }))}
           onRotate={(delta) => updatePageImage(selectedPage.id, (page) => ({ ...page, rotation: page.rotation + delta }))}
           onOpenTextRecognition={() => {

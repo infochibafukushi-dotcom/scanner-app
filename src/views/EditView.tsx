@@ -1,9 +1,10 @@
+import { useMemo, useState } from 'react'
 import { CornerEditor } from '../components/CornerEditor'
 import { CorrectedPreview } from '../components/CorrectedPreview'
 import { EditToolbar } from '../components/EditToolbar'
 import { FilterToolbar } from '../components/FilterToolbar'
-import { PAPER_OPTIONS } from '../utils/paper'
-import type { EditTool, FilterMode, PaperSize, ScanPage } from '../types'
+import { normalizeFilter, type EditTool, type FilterMode, type PaperSize, type ScanPage } from '../types'
+import { PAPER_OPTIONS, paperSizeLabel } from '../utils/paper'
 
 type Props = {
   page: ScanPage
@@ -40,18 +41,24 @@ export function EditView({
   onRotate,
   onOpenTextRecognition
 }: Props) {
+  const [paperOpen, setPaperOpen] = useState(false)
+  const activeTool = editTool === 'enhance' ? 'crop' : editTool
+  const pageFilter = normalizeFilter(page.filter)
+  const paperLabel = useMemo(() => paperSizeLabel(page.paperSize, page.corners), [page.corners, page.paperSize])
+
   const handleTool = (tool: EditTool) => {
     if (tool === 'ocr') {
       onOpenTextRecognition()
       return
     }
+    setPaperOpen(false)
     onToolChange(tool)
   }
 
   return (
-    <div className="edit-view">
+    <div className={`edit-view tool-${activeTool}`}>
       <header className="edit-view-header">
-        <button type="button" className="text-button" onClick={onBack}>
+        <button type="button" className="text-button" onClick={onBack} aria-label="戻る">
           ←
         </button>
         <h1>
@@ -63,47 +70,66 @@ export function EditView({
       </header>
 
       <main className="edit-view-main">
-        {editTool === 'crop' ? (
-          <CornerEditor
-            imageUrl={page.dataUrl}
-            filter={page.filter}
-            clean={page.clean}
-            corners={page.corners}
-            detectionMode={page.cornerDetection}
-            confidence={page.cornerConfidence}
-            detecting={detecting}
-            onChange={onCornersChange}
-            onRedetect={onRedetect}
-          />
-        ) : (
-          <CorrectedPreview page={page} />
-        )}
+        <div className="edit-stage">
+          {activeTool === 'crop' ? (
+            <CornerEditor
+              imageUrl={page.dataUrl}
+              filter={pageFilter}
+              clean={page.clean}
+              corners={page.corners}
+              detectionMode={page.cornerDetection}
+              confidence={page.cornerConfidence}
+              detecting={detecting}
+              compact
+              onChange={onCornersChange}
+              onRedetect={onRedetect}
+            />
+          ) : (
+            <CorrectedPreview page={{ ...page, filter: pageFilter }} compact />
+          )}
+        </div>
 
-        {editTool === 'crop' && (
-          <div className="paper-chip-row chip-scroll">
-            {PAPER_OPTIONS.map((option) => (
-              <button
-                key={option.key}
-                type="button"
-                className={page.paperSize === option.key ? 'chip active' : 'chip'}
-                onClick={() => onPaperSize(option.key)}
-              >
-                {option.label}
+        {activeTool === 'crop' && (
+          <div className="crop-controls">
+            <div className="crop-controls-row">
+              <button type="button" className="chip" onClick={onRedetect} disabled={detecting}>
+                {detecting ? '検出中…' : '再検出'}
               </button>
-            ))}
+              <button
+                type="button"
+                className={`chip paper-toggle ${paperOpen ? 'active' : ''}`}
+                onClick={() => setPaperOpen((value) => !value)}
+              >
+                用紙:{paperLabel}
+              </button>
+            </div>
+            {paperOpen && (
+              <div className="paper-chip-row chip-scroll" role="listbox" aria-label="用紙サイズ">
+                {PAPER_OPTIONS.map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    className={page.paperSize === option.key ? 'chip active' : 'chip'}
+                    onClick={() => onPaperSize(option.key)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
-        {editTool === 'filter' && (
+        {activeTool === 'filter' && (
           <FilterToolbar
-            filter={page.filter}
+            filter={pageFilter}
             clean={page.clean}
             onFilter={onFilter}
             onToggleClean={onToggleClean}
           />
         )}
 
-        {editTool === 'rotate' && (
+        {activeTool === 'rotate' && (
           <div className="rotate-toolbar">
             <button type="button" className="chip" onClick={() => onRotate(-90)}>
               左90°
@@ -115,7 +141,7 @@ export function EditView({
         )}
       </main>
 
-      <EditToolbar value={editTool === 'enhance' ? 'crop' : editTool} onChange={handleTool} />
+      <EditToolbar value={activeTool} onChange={handleTool} />
     </div>
   )
 }

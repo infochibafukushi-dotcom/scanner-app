@@ -15,6 +15,8 @@ type CornerEditorProps = {
   detecting: boolean
   clean?: boolean
   confidence?: number
+  /** Compact crop mode: image-first, no large card chrome. */
+  compact?: boolean
   onChange: (corners: [Point, Point, Point, Point]) => void
   onRedetect: () => void
 }
@@ -26,12 +28,8 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const pointerDistance = (first: PointerEvent, second: PointerEvent) =>
   Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY)
 
-const detectionLabel = (mode: CornerDetectionMode, confidence?: number) => {
-  if (mode === 'manual') return '手動調整済み'
-  if (mode === 'fallback') return '四隅を自動検出できませんでした'
-  if (typeof confidence === 'number' && confidence < 0.62) return '四隅を確認してください'
-  return '自動検出済み'
-}
+const needsCornerHint = (mode: CornerDetectionMode, confidence?: number) =>
+  mode === 'fallback' || (mode === 'auto' && typeof confidence === 'number' && confidence < 0.62)
 
 const loupeSizeForViewport = () => {
   const width = window.visualViewport?.width ?? window.innerWidth
@@ -52,14 +50,17 @@ const placeLoupe = (
   const viewportWidth = window.visualViewport?.width ?? window.innerWidth
   const viewportHeight = window.visualViewport?.height ?? window.innerHeight
 
+  // Keep clear of edit header / bottom toolbar while staying near the finger.
+  const topSafe = 56
+  const bottomSafe = 88
   let x = preferRight ? clientX + gap : clientX - size - gap
   if (x + size > viewportWidth - margin) x = clientX - size - gap
   if (x < margin) x = clientX + gap
   x = clamp(x, margin, viewportWidth - size - margin)
 
   let y = clientY - size - gap
-  if (y < margin) y = clientY + gap
-  y = clamp(y, margin, viewportHeight - size - margin)
+  if (y < topSafe) y = clientY + gap
+  y = clamp(y, topSafe, viewportHeight - size - bottomSafe)
 
   return { x, y, size, point }
 }
@@ -72,6 +73,7 @@ export function CornerEditor({
   detecting,
   clean = false,
   confidence,
+  compact = false,
   onChange,
   onRedetect
 }: CornerEditorProps) {
@@ -292,27 +294,30 @@ export function CornerEditor({
     [corners]
   )
 
+  const showHint = needsCornerHint(detectionMode, confidence)
+
   return (
-    <div className="editor-panel">
-      <div className="editor-header editor-header-actions">
-        <div>
-          <div className="editor-title-line">
-            <h3>四隅調整</h3>
-            <span className={`detection-badge ${detectionMode}`}>
-              {detectionLabel(detectionMode, confidence)}
-            </span>
+    <div className={compact ? 'editor-panel compact-crop' : 'editor-panel'}>
+      {!compact && (
+        <div className="editor-header editor-header-actions">
+          <div>
+            <div className="editor-title-line">
+              <h3>四隅調整</h3>
+            </div>
+            <p>四隅をドラッグして合わせます</p>
           </div>
-          <p>1本指で移動、2本指で拡大。角ドラッグ中は指の近くに拡大ルーペを表示します。</p>
+          <button type="button" className="chip" onClick={onRedetect} disabled={detecting}>
+            {detecting ? '再検出中…' : '再検出'}
+          </button>
         </div>
-        <button type="button" className="chip" onClick={onRedetect} disabled={detecting}>
-          {detecting ? '再検出中…' : '四隅を再検出'}
-        </button>
-      </div>
+      )}
+
+      {compact && showHint && <p className="crop-inline-hint">四隅を確認してください</p>}
 
       <div
         ref={containerRef}
         className="editor-canvas editor-gesture-viewport"
-        style={{ aspectRatio: `${ratio}` }}
+        style={compact ? undefined : { aspectRatio: `${ratio}` }}
         onPointerDown={onViewportPointerDown}
         onPointerMove={onViewportPointerMove}
         onPointerUp={onViewportPointerUp}

@@ -4,9 +4,10 @@ import { RENDER_MAX, renderScanPage } from '../utils/image'
 
 type CorrectedPreviewProps = {
   page: ScanPage
+  compact?: boolean
 }
 
-export function CorrectedPreview({ page }: CorrectedPreviewProps) {
+export function CorrectedPreview({ page, compact = false }: CorrectedPreviewProps) {
   const [imageUrl, setImageUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -34,7 +35,7 @@ export function CorrectedPreview({ page }: CorrectedPreviewProps) {
         })
         .catch((previewError) => {
           console.error(previewError)
-          if (!cancelled) setError('台形補正プレビューを作成できませんでした。四隅の位置を確認してください。')
+          if (!cancelled) setError('プレビューを作成できませんでした。四隅を確認してください。')
         })
         .finally(() => {
           if (!cancelled) setLoading(false)
@@ -50,12 +51,24 @@ export function CorrectedPreview({ page }: CorrectedPreviewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageKey])
 
+  if (compact) {
+    return (
+      <div className="corrected-preview compact">
+        {loading && <span className="preview-status">更新中…</span>}
+        {error && <div className="preview-error-inline">{error}</div>}
+        {!error && imageUrl && (
+          <img src={imageUrl} alt="補正後プレビュー" className="corrected-preview-image" />
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="card corrected-preview-card">
       <div className="section-title-row corrected-preview-title">
         <div>
           <h2>台形補正後プレビュー</h2>
-          <p>四隅・回転・カラー/グレー/白黒を反映した、保存時と同じ形です。</p>
+          <p>四隅・回転・自動/カラー/グレーを反映した、保存時と同じ形です。</p>
         </div>
         {loading && <span>更新中…</span>}
       </div>
